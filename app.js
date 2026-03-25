@@ -144,10 +144,17 @@ const state = {
   runId: null,
   runPath: null,
   variant: "gapfill",
+<<<<<<< HEAD
+  species: localStorage.getItem("species") || "skipjack",
+  model: (["scoring","frontplus"].includes(localStorage.getItem("model")) ? localStorage.getItem("model") : "scoring"),
+  map: (["phab","front","conf"].includes(localStorage.getItem("map")) ? localStorage.getItem("map") : "phab"),
+  agg: (["p90","mean"].includes(localStorage.getItem("agg")) ? localStorage.getItem("agg") : "p90"),
+=======
   species: _savedSpecies,
   model: _savedModel,
   map: _savedMap,
   agg: _savedAgg,
+>>>>>>> 24c46bda9eee9df5449a28c2697012bf37bec084
   times: [],
   t0: null,
   t1: null,
@@ -1251,24 +1258,12 @@ function currentPerTimeKey(){
 }
 
 async function filterTimeIdsByExistingLayer(timeIds){
+  // GitHub Pages/Fastly can return false negatives for HEAD/GET existence probes on .bin files
+  // even when the asset is downloadable. Trust metadata time_ids and only de-dup/sort here.
   try{
-    const key = currentPerTimeKey();
-    const tpl = state?.meta?.paths?.per_time?.[key];
-    if(!tpl || typeof tpl!=="string") return timeIds;
-
-    const good=[];
-    const CONC=6;
-    for(let i=0;i<timeIds.length;i+=CONC){
-      const chunk = timeIds.slice(i,i+CONC);
-      const res = await Promise.all(chunk.map(async tid=>{
-        const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
-        return (await exists(url)) ? tid : null;
-      }));
-      for(const x of res) if(x) good.push(x);
-    }
-    return good;
+    return Array.from(new Set((timeIds||[]).filter(Boolean))).sort();
   }catch(_){
-    return timeIds;
+    return timeIds || [];
   }
 }
 
@@ -1871,7 +1866,10 @@ async function computeAndRender(){
   if(!state.grid || !Number.isFinite(state.grid.width) || !Number.isFinite(state.grid.height)){
     throw new Error("Run metadata/grid is not loaded yet. latest/meta_index.json or species meta.json is missing.");
   }
-  if(!Array.isArray(state.timeIsos) || !state.timeIsos.length){
+  const readyTimeIsos = (Array.isArray(state.timeIsos) && state.timeIsos.length)
+    ? state.timeIsos
+    : (Array.isArray(state.times) ? state.times : []);
+  if(!readyTimeIsos.length){
     throw new Error("No forecast times are available yet for the selected run/species.");
   }
 
@@ -2030,18 +2028,65 @@ async function refreshVariants(){
 
 async function loadSpeciesMetaAndInit(){
   state.species = $("speciesSelect").value;
-  // species meta path:
-  const url = latestUrl(`${state.runPath}/variants/${state.variant}/species/${state.species}/meta.json`);
-  state.meta = await fetchJson(url);
-  // run-level meta for availability reporting + deduped time catalog
+  // run-level meta first; it is often present even when species meta.json is missing on Pages
   state.runMeta = await fetchJson(latestUrl(`${state.runPath}/meta.json`)).catch(()=>null);
-  state.grid = state.meta.grid;
 
-  
+  // Try variants in a sane order, preferring the currently selected one.
+  const trialVariants = Array.from(new Set([state.variant, "auto", "gapfill", "base"].filter(Boolean)));
+  let loadedMeta = null;
+  let loadedVariant = state.variant;
+  for(const v of trialVariants){
+    try{
+      const url = latestUrl(`${state.runPath}/variants/${v}/species/${state.species}/meta.json`);
+      loadedMeta = await fetchJson(url);
+      loadedVariant = v;
+      break;
+    }catch(_){ }
+  }
+
+  // Pages may publish bins + run meta, but miss species meta.json. Synthesize a minimal species meta.
+  if(!loadedMeta){
+    const tids = state.runMeta?.available_time_ids || [];
+    loadedMeta = {
+      species: state.species,
+      label: { en: state.species, fa: state.species },
+      grid: state.runMeta?.grid || null,
+      times: tids.map(timeIdToIso),
+      time_ids: tids.slice(),
+      paths: {
+        mask: `variants/${loadedVariant}/species/${state.species}/mask_u8.bin`,
+        per_time: {
+          phab_scoring: `variants/${loadedVariant}/species/${state.species}/times/{time}/phab_f32.bin`,
+          phab_frontplus: `variants/${loadedVariant}/species/${state.species}/times/{time}/phab_f32.bin`,
+          front: `variants/${loadedVariant}/species/${state.species}/times/{time}/front_f32.bin`,
+          conf: `variants/${loadedVariant}/species/${state.species}/times/{time}/conf_f32.bin`,
+          sst: `variants/${loadedVariant}/species/${state.species}/times/{time}/sst_f32.bin`,
+          chl: `variants/${loadedVariant}/species/${state.species}/times/{time}/chl_f32.bin`,
+          current: `variants/${loadedVariant}/species/${state.species}/times/{time}/current_f32.bin`,
+          qc_chl: `variants/${loadedVariant}/species/${state.species}/times/{time}/qc_chl_u8.bin`
+        }
+      },
+      model_info: {},
+      provider_status: {}
+    };
+  }
+
+  state.variant = loadedVariant;
+  const variantSelect = $("variantSelect");
+  if(variantSelect && Array.from(variantSelect.options).some(o=>o.value===loadedVariant)) variantSelect.value = loadedVariant;
+  state.meta = loadedMeta;
+  state.grid = state.meta?.grid || state.runMeta?.grid;
+
   ensureGridBounds();
 // load server mask
   const maskUrl = latestUrl(`${state.runPath}/${state.meta.paths.mask}`);
-  state.baseMask = await fetchBin(maskUrl, "u8");
+  try{
+    state.baseMask = await fetchBin(maskUrl, "u8");
+  }catch(err){
+    console.warn("Mask fetch failed, falling back to all-valid mask:", err);
+    state.baseMask = new Uint8Array(state.grid.width * state.grid.height);
+    state.baseMask.fill(1);
+  }
 
   // effective analysis mask = server mask × user AOI
   state.analysisMask = combineMask(state.baseMask, state.userMask);
@@ -2051,6 +2096,7 @@ async function loadSpeciesMetaAndInit(){
   state.timeIds = await filterTimeIdsByExistingLayer(availableTimeIds);
   // keep derived ISO list in sync
   state.times = state.timeIds.map(timeIdToIso);
+  state.timeIsos = [...state.times];
   state.isoToTimeId = {};
   for(let i=0;i<state.times.length;i++){ state.isoToTimeId[state.times[i]] = state.timeIds[i]; }
 
@@ -2081,6 +2127,9 @@ async function loadSpeciesMetaAndInit(){
 
   // defaults persisted
   $("speciesSelect").value = state.species;
+  if(![...$("modelSelect").options].some(o=>o.value===state.model)) state.model = "scoring";
+  if(![...$("mapSelect").options].some(o=>o.value===state.map)) state.map = "phab";
+  if(![...$("aggSelect").options].some(o=>o.value===state.agg)) state.agg = "p90";
   $("modelSelect").value = state.model;
   $("mapSelect").value = state.map;
   $("aggSelect").value = state.agg;
