@@ -30,7 +30,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="seydyaar")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("demo-generate", help="Generate an offline demo run into latest")
+    p = sub.add_parser("demo-generate", help="Generate an offline demo run into docs/latest")
     p.add_argument("--date", default="today", help="Run date (YYYY-MM-DD) or 'today'")
     p.add_argument("--past-days", type=int, default=2, help="Past days to include (max 2 recommended)")
     p.add_argument("--future-days", type=int, default=10, help="Future days to include (max 10 recommended)")
@@ -42,7 +42,7 @@ def main() -> None:
     p.add_argument("--export-cog", action="store_true", help="Write per-time COG GeoTIFFs (larger output)")
     p.add_argument("--depths", default="5,10,15,20", help="Comma-separated gear depths (m) to precompute")
 
-    p2 = sub.add_parser("run-daily", help="Run the lean online-data pipeline into latest")
+    p2 = sub.add_parser("run-daily", help="Run the lean online-data pipeline into docs/latest")
     p2.add_argument("--date", default="today", help="Anchor date (YYYY-MM-DD) or 'today' (UTC)")
     p2.add_argument("--past-days", type=int, default=1, help="Lean default: 1")
     p2.add_argument("--future-days", type=int, default=5, help="Lean default: 5")

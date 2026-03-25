@@ -57,7 +57,7 @@ async function loadMeta(){
     // Prefer the stable endpoint if present
     let info = null;
     try{
-      const r0 = await fetch("./latest/meta.json", {cache:"no-store"});
+      const r0 = await fetch("./docs/latest/meta.json", {cache:"no-store"});
       if(r0.ok) info = await r0.json();
     }catch(_){ /* ignore */ }
 
