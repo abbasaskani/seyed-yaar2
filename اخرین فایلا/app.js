@@ -134,8 +134,8 @@ const state = {
   runPath: null,
   variant: "gapfill",
   species: localStorage.getItem("species") || "skipjack",
-  model: localStorage.getItem("model") || "scoring",
-  map: localStorage.getItem("map") || "phab",
+  model: localStorage.getItem("model") || "ensemble",
+  map: localStorage.getItem("map") || "pcatch",
   agg: localStorage.getItem("agg") || "p90",
   times: [],
   t0: null,
@@ -670,7 +670,7 @@ async function showPointPopup(lat, lon, metaInfo){
       state._layerCache = state._layerCache || {};
       state._layerCache[timeId] = state._layerCache[timeId] || {};
 
-      const wantKeys = ["phab_scoring","phab_frontplus","front","conf"];
+      const wantKeys = ["pcatch_ensemble","phab_scoring","pops"];
       const parts = [];
       for(const key of wantKeys){
         const tpl = state.meta.paths.per_time[key];
@@ -1231,44 +1231,24 @@ async function scanTimeIdsFromTimesDir(){
 }
 
 function currentPerTimeKey(){
-  const mapKey = $("mapSelect")?.value || "phab";
-  const modelKey = $("modelSelect")?.value || "scoring";
+  const mapKey = $("mapSelect")?.value || "pcatch";
+  const modelKey = $("modelSelect")?.value || "ensemble";
+  if(mapKey==="pcatch") return `pcatch_${modelKey}`;
   if(mapKey==="phab") return (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-  if(mapKey==="front") return "front";
+  if(mapKey==="pops") return "pops";
+  if(mapKey==="agree") return "agree";
+  if(mapKey==="spread") return "spread";
   if(mapKey==="conf") return "conf";
-  return "phab_scoring";
+  return `pcatch_${modelKey}`;
 }
 
 async function filterTimeIdsByExistingLayer(timeIds){
+  // GitHub Pages/Fastly can return false negatives for HEAD/GET existence probes on .bin files
+  // even when the asset is downloadable. Trust metadata time_ids and only de-dup/sort here.
   try{
-    const preferred = currentPerTimeKey();
-    const fallbackKeys = [preferred, "phab_scoring", "phab_frontplus", "front", "conf"];
-    const uniqueKeys = [...new Set(fallbackKeys.filter(Boolean))];
-    const good = [];
-    const resolvedKeyByTid = {};
-    const CONC = 6;
-    for(let i=0;i<timeIds.length;i+=CONC){
-      const chunk = timeIds.slice(i,i+CONC);
-      const res = await Promise.all(chunk.map(async tid=>{
-        for(const key of uniqueKeys){
-          const tpl = state?.meta?.paths?.per_time?.[key];
-          if(!tpl || typeof tpl !== "string") continue;
-          const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
-          if(await exists(url)) return {tid, key};
-        }
-        return null;
-      }));
-      for(const x of res){
-        if(x){
-          good.push(x.tid);
-          resolvedKeyByTid[x.tid] = x.key;
-        }
-      }
-    }
-    state.availableLayerKeyByTimeId = resolvedKeyByTid;
-    return good;
+    return Array.from(new Set((timeIds||[]).filter(Boolean))).sort();
   }catch(_){
-    return timeIds;
+    return timeIds || [];
   }
 }
 
@@ -1352,12 +1332,8 @@ $("exportPinsBtn")?.addEventListener("click", ()=>{
 let _anTimer = null;
 function scheduleAnalyze(){
   if(!$("autoAnalyzeToggle")?.checked) return;
-  if(!isAnalysisReady()) return;
   clearTimeout(_anTimer);
-  _anTimer = setTimeout(async ()=>{
-    if(!isAnalysisReady()) return;
-    try{ await computeAndRender(); }catch(_){/* keep UI quiet while data is not ready */}
-  }, 320);
+  _anTimer = setTimeout(()=>{ try{ computeAndRender(); }catch(_){} }, 320);
 }
 
 ["gridToggle","avgToggle","aoiMode","clusterThreshold","clusterEpsKm","clusterMinPts","stepSelect","aggSelect","mapSelect","modelSelect"].forEach(id=>{
@@ -1733,7 +1709,6 @@ function renderAudit(){
    Compute & update view
 ------------------------------ */
 function getSelectedTimes(){
-  if(!Array.isArray(state.times) || !state.times.length) return [];
   const i0 = $("t0Select").selectedIndex;
   const i1 = $("t1Select").selectedIndex;
   const lb = parseInt($("lookbackSelect")?.value || "0", 10);
@@ -1749,8 +1724,11 @@ function getSelectedTimes(){
 
 function mapTitle(){
   const m = $("mapSelect").value;
+  if(m==="pcatch") return "Pcatch (Habitat×Ops)";
   if(m==="phab") return "Habitat Suitability";
-  if(m==="front") return "Frontal Score";
+  if(m==="pops") return "Operational Feasibility";
+  if(m==="agree") return "Agreement (ensemble)";
+  if(m==="spread") return "Spread/Std (ensemble)";
   if(m==="conf") return "Confidence / Opacity";
   return m;
 }
@@ -1873,7 +1851,10 @@ async function computeAndRender(){
   if(!state.grid || !Number.isFinite(state.grid.width) || !Number.isFinite(state.grid.height)){
     throw new Error("Run metadata/grid is not loaded yet. latest/meta_index.json or species meta.json is missing.");
   }
-  if(!Array.isArray(state.times) || !state.times.length){
+  const readyTimeIsos = (Array.isArray(state.timeIsos) && state.timeIsos.length)
+    ? state.timeIsos
+    : (Array.isArray(state.times) ? state.times : []);
+  if(!readyTimeIsos.length){
     throw new Error("No forecast times are available yet for the selected run/species.");
   }
 
@@ -1887,20 +1868,22 @@ async function computeAndRender(){
   async function loadLayerForTime(timeIso){
     const tid = timeIdFromIso(timeIso);
     let key = null;
-    if(mapKey==="phab"){
+    if(mapKey==="pcatch"){
+      key = `pcatch_${modelKey}`;
+    }else if(mapKey==="phab"){
       key = (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-    }else if(mapKey==="front"){
-      key = "front";
+    }else if(mapKey==="pops"){
+      key = "pops";
+    }else if(mapKey==="agree"){
+      key = "agree";
+    }else if(mapKey==="spread"){
+      key = "spread";
     }else if(mapKey==="conf"){
       key = "conf";
     }else{
-      key = "phab_scoring";
+      key = `pcatch_${modelKey}`;
     }
-    let tpl = state.meta.paths?.per_time?.[key];
-    if((!tpl || typeof tpl !== "string") && key !== "phab_scoring"){
-      key = "phab_scoring";
-      tpl = state.meta.paths?.per_time?.[key];
-    }
+    const tpl = state.meta.paths.per_time[key];
     if(!tpl || typeof tpl !== "string"){
       console.warn("Missing layer template:", key);
       return new Float32Array(W*H).fill(NaN);
@@ -1949,21 +1932,34 @@ async function computeAndRender(){
    Run/variant/species meta wiring
 ------------------------------ */
 async function resolveLatestBase(){
-  const candidates = [
+  const rawCandidates = [
+    "docs/latest",
+    "./docs/latest",
+    "../docs/latest",
     "latest",
     "./latest",
     "../latest",
   ];
+  const candidates = Array.from(new Set(rawCandidates.map(x => x.replace(/\/$/,""))));
   let lastErr = null;
+  let best = null;
   for (const base of candidates) {
-    const url = `${base.replace(/\/$/,"")}/meta_index.json`;
+    const metaIndexUrl = `${base}/meta_index.json`;
     try {
-      const data = await fetchJson(url);
-      state.latestBase = base.replace(/\/$/,"");
-      return data;
+      const data = await fetchJson(metaIndexUrl);
+      const run = data?.runs?.find?.(r => r?.path) || data?.runs?.[data?.runs?.length-1] || null;
+      if(run?.path){
+        state.latestBase = base;
+        return data;
+      }
+      if(!best) best = { base, data };
     } catch (err) {
       lastErr = err;
     }
+  }
+  if(best){
+    state.latestBase = best.base;
+    return best.data;
   }
   throw lastErr || new Error("Could not resolve latest/meta_index.json");
 }
@@ -1978,78 +1974,25 @@ async function refreshMeta(){
   state.index = await resolveLatestBase();
   const runSelect = $("runSelect");
   runSelect.innerHTML = "";
-  let runs = Array.isArray(state.index?.runs) ? state.index.runs.slice() : [];
-
-  // Compatibility fallback: some builds only populate latest/index.json + latest/meta.json
-  // while meta_index.json remains empty or missing run entries.
-  if(!runs.length){
-    try{
-      const compatIndex = await fetchJson(latestUrl("index.json"));
-      const compatMeta = await fetchJson(latestUrl("meta.json")).catch(()=>null);
-      if(compatIndex?.run_path){
-        const pseudoRunId = compatIndex.latest_run_id || compatMeta?.run_id || "main";
-        runs = [{
-          run_id: pseudoRunId,
-          path: compatIndex.run_path,
-          variants: [compatIndex.variant_default || compatMeta?.variant || "base"],
-          species: compatIndex.species || compatMeta?.species || [$("speciesSelect")?.value || "skipjack"],
-          models: compatIndex.models || compatMeta?.models || ["scoring","frontplus"],
-          generated_at_utc: compatIndex.generated_at_utc || compatMeta?.generated_at_utc || null,
-          fast: true,
-          _compat: true,
-        }];
-        state.index = Object.assign({}, state.index || {}, {
-          latest_run_id: pseudoRunId,
-          runs,
-          _compat_source: "index.json",
-        });
-      }
-    }catch(err){
-      console.warn("Compatibility fallback via latest/index.json failed", err);
-    }
-  }
-
-  for(const r of runs){
+  for(const r of state.index.runs){
     const opt = document.createElement("option");
     opt.value = r.run_id;
     opt.textContent = `${r.run_id} (${r.fast ? "fast" : "full"})`;
     runSelect.appendChild(opt);
   }
-  state.runId = state.index?.latest_run_id || runs[runs.length-1]?.run_id || null;
-  runSelect.value = state.runId || "";
+  state.runId = state.index.latest_run_id || state.index.runs[state.index.runs.length-1]?.run_id;
+  runSelect.value = state.runId;
 
-  runSelect.onchange = async ()=>{
+  runSelect.addEventListener("change", async ()=>{
     state.runId = runSelect.value;
-    try{ await refreshVariants(); }
-    catch(err){ console.error(err); }
-  };
-
-  if(!state.runId){
-    state.meta = null;
-    state.runMeta = null;
-    state.grid = null;
-    state.runPath = null;
-    state.times = [];
-    state.timeIsos = [];
-    updateAnalyzeAvailability();
-    if($("availabilityInfo")){
-      $("availabilityInfo").innerHTML = `<b>${lang==="fa" ? "هنوز ران معتبری پیدا نشد" : "No run found yet"}</b><br><span class="muted">${lang==="fa" ? "meta_index.json خالی است یا latest/index.json هم run_path ندارد. باید backend یک ران کامل را تا انتها بنویسد." : "meta_index.json is empty or latest/index.json has no run_path yet. The backend must finish writing one complete run."}</span>`;
-    }
-    return;
-  }
+    await refreshVariants();
+  });
 
   await refreshVariants();
 }
 
 async function refreshVariants(){
-  const run = (state.index?.runs || []).find(r=>r.run_id===state.runId);
-  if(!run){
-    state.runPath = null;
-    state.times = [];
-    state.timeIsos = [];
-    updateAnalyzeAvailability();
-    return;
-  }
+  const run = state.index.runs.find(r=>r.run_id===state.runId);
   state.runPath = run.path; // e.g., runs/demo_YYYY-MM-DD
   const variantSelect = $("variantSelect");
   variantSelect.innerHTML = "";
@@ -2068,71 +2011,17 @@ async function refreshVariants(){
   variantSelect.addEventListener("change", async ()=>{
     state.variant = variantSelect.value;
     $("gapToggle").checked = (state.variant === "gapfill");
-    try{ await loadSpeciesMetaAndInit(); }
-    catch(err){ console.error(err); }
+    await loadSpeciesMetaAndInit();
   });
 
-  try{ await loadSpeciesMetaAndInit(); }
-  catch(err){ console.error(err); }
-}
-
-function sanitizeUiSelections(){
-  const allowedModels = ["scoring", "frontplus"];
-  const allowedMaps = ["phab", "front", "conf"];
-  const allowedAggs = ["p90", "mean"];
-  if(!allowedModels.includes(state.model)) state.model = "scoring";
-  if(!allowedMaps.includes(state.map)) state.map = "phab";
-  if(!allowedAggs.includes(state.agg)) state.agg = "p90";
-  if($("modelSelect")) $("modelSelect").value = state.model;
-  if($("mapSelect")) $("mapSelect").value = state.map;
-  if($("aggSelect")) $("aggSelect").value = state.agg;
-}
-
-function isAnalysisReady(){
-  return !!(state.grid && Number.isFinite(state.grid.width) && Number.isFinite(state.grid.height) && Array.isArray(state.times) && state.times.length > 0 && state.meta && state.runPath);
-}
-
-function updateAnalyzeAvailability(){
-  const ready = isAnalysisReady();
-  if($("analyzeBtn")) $("analyzeBtn").disabled = !ready;
-  if($("timeSlider")){
-    $("timeSlider").max = String(Math.max(0, (state.times?.length || 1) - 1));
-    $("timeSlider").disabled = !ready;
-  }
-  if(!ready){
-    safeText("dirtyHint", (lang==="fa") ? "هنوز خروجی معتبر برای تحلیل آماده نیست" : "No valid analysis output is ready yet");
-    if($("top10Table")){
-      $("top10Table").innerHTML = `<div class="muted small">${(lang==="fa") ? "هنوز meta/grid/times کامل لود نشده‌اند. اول مطمئن شو latest/ واقعاً ساخته شده و بعد Refresh/Analyze بزن." : "Meta/grid/times are not loaded yet. Make sure latest/ has been generated, then refresh and analyze again."}</div>`;
-    }
-  }
+  await loadSpeciesMetaAndInit();
 }
 
 async function loadSpeciesMetaAndInit(){
   state.species = $("speciesSelect").value;
-  sanitizeUiSelections();
-  const run = (state.index?.runs || []).find(r=>r.run_id===state.runId) || null;
-  const availableSpecies = Array.isArray(run?.species) ? run.species : [];
-  if(availableSpecies.length && !availableSpecies.includes(state.species)){
-    state.species = availableSpecies[0];
-    if($("speciesSelect")) $("speciesSelect").value = state.species;
-  }
   // species meta path:
   const url = latestUrl(`${state.runPath}/variants/${state.variant}/species/${state.species}/meta.json`);
-  try{
-    state.meta = await fetchJson(url);
-  }catch(err){
-    state.meta = null;
-    state.runMeta = null;
-    state.grid = null;
-    state.times = [];
-    state.timeIsos = [];
-    updateAnalyzeAvailability();
-    if($("availabilityInfo")){
-      const extra = availableSpecies.length ? `<br><span class="muted small">Available species: ${availableSpecies.join(", ")}</span>` : "";
-      $("availabilityInfo").innerHTML = `<b>${lang==="fa"?"فایل meta گونه پیدا نشد":"Species meta was not found"}</b><br><span class="muted small">${url}</span>${extra}`;
-    }
-    throw err;
-  }
+  state.meta = await fetchJson(url);
   // run-level meta for availability reporting + deduped time catalog
   state.runMeta = await fetchJson(latestUrl(`${state.runPath}/meta.json`)).catch(()=>null);
   state.grid = state.meta.grid;
@@ -2141,7 +2030,13 @@ async function loadSpeciesMetaAndInit(){
   ensureGridBounds();
 // load server mask
   const maskUrl = latestUrl(`${state.runPath}/${state.meta.paths.mask}`);
-  state.baseMask = await fetchBin(maskUrl, "u8");
+  try{
+    state.baseMask = await fetchBin(maskUrl, "u8");
+  }catch(err){
+    console.warn("Mask fetch failed, falling back to all-valid mask:", err);
+    state.baseMask = new Uint8Array(state.grid.width * state.grid.height);
+    state.baseMask.fill(1);
+  }
 
   // effective analysis mask = server mask × user AOI
   state.analysisMask = combineMask(state.baseMask, state.userMask);
@@ -2149,12 +2044,9 @@ async function loadSpeciesMetaAndInit(){
   // time selects (prefer runMeta.available_time_ids to avoid listing missing future bins)
   const availableTimeIds = state.runMeta?.available_time_ids || state.meta.time_ids || [];
   state.timeIds = await filterTimeIdsByExistingLayer(availableTimeIds);
-  if(!state.timeIds.length && Array.isArray(availableTimeIds) && availableTimeIds.length){
-    console.warn("Declared time_ids exist but layer files were not found for current model/map.", {availableTimeIds, runPath: state.runPath, variant: state.variant, species: state.species, model: state.model, map: state.map});
-  }
   // keep derived ISO list in sync
   state.times = state.timeIds.map(timeIdToIso);
-  state.timeIsos = state.times.slice();
+  state.timeIsos = [...state.times];
   state.isoToTimeId = {};
   for(let i=0;i<state.times.length;i++){ state.isoToTimeId[state.times[i]] = state.timeIds[i]; }
 
@@ -2163,11 +2055,7 @@ async function loadSpeciesMetaAndInit(){
   if($("availabilityInfo")){
     if(lastTid){
       const lastIso = timeIdToIso(lastTid);
-      let html = `<b>${lang==="fa"?"آخرین دیتای موجود":"Latest available data"}</b><br><span class="muted">${fmtTime(lastIso)} (UTC)</span>`;
-      if(!state.timeIds.length){
-        html += `<br><span class="muted small">${lang==="fa"?"time id ثبت شده ولی فایل لایه برای model/map فعلی پیدا نشد. model یا map را عوض کن یا خروجی backend را چک کن.":"Time IDs are declared, but no layer file was found for the current model/map. Try another model/map or inspect backend outputs."}</span>`;
-      }
-      $("availabilityInfo").innerHTML = html;
+      $("availabilityInfo").innerHTML = `<b>${lang==="fa"?"آخرین دیتای موجود":"Latest available data"}</b><br><span class="muted">${fmtTime(lastIso)} (UTC)</span>`;
     }else{
       $("availabilityInfo").innerHTML = `<b>${lang==="fa"?"دیتایی یافت نشد":"No data found"}</b>`;
     }
@@ -2183,18 +2071,15 @@ async function loadSpeciesMetaAndInit(){
     $("t1Select").appendChild(o1);
   }
   // default: latest single time (for planning)
-  if(state.times.length){
-    const last = Math.max(0, state.times.length-1);
-    $("t0Select").selectedIndex = last;
-    $("t1Select").selectedIndex = last;
-  }
+  const last = Math.max(0, state.times.length-1);
+  $("t0Select").selectedIndex = last;
+  $("t1Select").selectedIndex = last;
 
   // defaults persisted
   $("speciesSelect").value = state.species;
   $("modelSelect").value = state.model;
   $("mapSelect").value = state.map;
   $("aggSelect").value = state.agg;
-  updateAnalyzeAvailability();
 
   // Per‑species lookback memory (each species can have its own averaging window)
   try{
@@ -2321,12 +2206,6 @@ $("gapToggle").addEventListener("change", async ()=>{
 });
 
 $("analyzeBtn").addEventListener("click", async ()=>{
-  if(!isAnalysisReady()){
-    state.dirty = true;
-    toast(lang==="fa" ? "هنوز metadata یا زمان‌های پیش‌بینی آماده نیست. اول ران backend را کامل کن و Refresh بزن." : "Metadata or forecast times are not ready yet. Finish the backend run and refresh first.", "warn", lang==="fa"?"آماده نیست":"Not ready");
-    safeText("dirtyHint", (lang==="fa") ? "هنوز metadata/times آماده نیست" : "Metadata/times are not ready yet");
-    return;
-  }
   state.dirty = false;
   safeText("dirtyHint", (lang==="fa") ? "در حال تحلیل..." : "Analyzing…");
   $("top10Table").innerHTML = `<div class="skeleton" style="height:180px"></div>`;
@@ -2753,7 +2632,7 @@ setTimeout(()=>{ try{ map?.invalidateSize(true); }catch(_){} }, 120);
 const analyzeBtn = $("analyzeBtn");
 if (analyzeBtn) analyzeBtn.disabled = true;
 refreshMeta().then(()=>{
-  updateAnalyzeAvailability();
+  if (analyzeBtn) analyzeBtn.disabled = false;
 }).catch(err=>{
   console.error(err);
   if (analyzeBtn) analyzeBtn.disabled = true;
