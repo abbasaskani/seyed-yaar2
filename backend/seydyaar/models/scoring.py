@@ -41,8 +41,8 @@ class HabitatInputs:
     sst_c: np.ndarray
     chl_mg_m3: np.ndarray
     current_m_s: np.ndarray
-    waves_hs_m: np.ndarray | None = None
     ssh_m: np.ndarray
+    waves_hs_m: np.ndarray | None = None
     front_fused: np.ndarray | None = None
     eke: np.ndarray | None = None
     vorticity: np.ndarray | None = None
