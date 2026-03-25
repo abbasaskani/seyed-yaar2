@@ -10,6 +10,7 @@ pip install -r backend\requirements.txt
 
 # make backend package importable
 $env:PYTHONPATH=(Resolve-Path .\backend).Path
+$env:SEYDYAAR_ENABLE_OPS="0"
 
 # lean run: skipjack only, 1 day past, 5 days future, 12h steps, 160x160
 python -m seydyaar run-daily --out latest --past-days 1 --future-days 5 --step-hours 12 --grid 160x160 --species skipjack
@@ -20,3 +21,5 @@ python -m http.server 9000
 
 # open in browser
 http://localhost:9000/app.html
+
+# note: with --step-hours 12, timestamps are aligned to 06Z and 18Z

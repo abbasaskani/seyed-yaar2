@@ -67,7 +67,7 @@ self.addEventListener("fetch", (event) => {
         })
         .catch(async () => {
           const hit = await caches.match(req);
-          return hit || new Response("Offline and not cached", { status: 503, statusText: "Service Unavailable" });
+          return hit || new Response("Not cached", { status: 503, statusText: "Service Unavailable" });
         })
     );
     return;

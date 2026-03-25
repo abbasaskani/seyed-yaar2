@@ -30,8 +30,8 @@ jobs:
       SEYDYAAR_FUTURE_DAYS: "5"
       SEYDYAAR_STEP_HOURS: "12"
       SEYDYAAR_GRID: "160x160"
-      SEYDYAAR_SPECIES: "skipjack"
 
+      SEYDYAAR_ENABLE_OPS: "0"
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -61,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/backend"
-          python -m seydyaar run-daily             --out latest             --past-days "$SEYDYAAR_PAST_DAYS"             --future-days "$SEYDYAAR_FUTURE_DAYS"             --step-hours "$SEYDYAAR_STEP_HOURS"             --grid "$SEYDYAAR_GRID"             --species "$SEYDYAAR_SPECIES"
+          python -m seydyaar run-daily             --out latest             --past-days "$SEYDYAAR_PAST_DAYS"             --future-days "$SEYDYAAR_FUTURE_DAYS"             --step-hours "$SEYDYAAR_STEP_HOURS"             --grid "$SEYDYAAR_GRID"             --species "${SEYDYAAR_SPECIES:-skipjack}"
 
       - name: Assert manifest & verify exist
         if: always()

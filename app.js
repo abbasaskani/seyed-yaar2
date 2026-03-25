@@ -134,8 +134,8 @@ const state = {
   runPath: null,
   variant: "gapfill",
   species: localStorage.getItem("species") || "skipjack",
-  model: localStorage.getItem("model") || "ensemble",
-  map: localStorage.getItem("map") || "pcatch",
+  model: localStorage.getItem("model") || "scoring",
+  map: localStorage.getItem("map") || "phab",
   agg: localStorage.getItem("agg") || "p90",
   times: [],
   t0: null,
@@ -670,7 +670,7 @@ async function showPointPopup(lat, lon, metaInfo){
       state._layerCache = state._layerCache || {};
       state._layerCache[timeId] = state._layerCache[timeId] || {};
 
-      const wantKeys = ["pcatch_ensemble","phab_scoring","pops"];
+      const wantKeys = ["phab_scoring","phab_frontplus","front","conf"];
       const parts = [];
       for(const key of wantKeys){
         const tpl = state.meta.paths.per_time[key];
@@ -1231,33 +1231,41 @@ async function scanTimeIdsFromTimesDir(){
 }
 
 function currentPerTimeKey(){
-  const mapKey = $("mapSelect")?.value || "pcatch";
-  const modelKey = $("modelSelect")?.value || "ensemble";
-  if(mapKey==="pcatch") return `pcatch_${modelKey}`;
+  const mapKey = $("mapSelect")?.value || "phab";
+  const modelKey = $("modelSelect")?.value || "scoring";
   if(mapKey==="phab") return (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-  if(mapKey==="pops") return "pops";
-  if(mapKey==="agree") return "agree";
-  if(mapKey==="spread") return "spread";
+  if(mapKey==="front") return "front";
   if(mapKey==="conf") return "conf";
-  return `pcatch_${modelKey}`;
+  return "phab_scoring";
 }
 
 async function filterTimeIdsByExistingLayer(timeIds){
   try{
-    const key = currentPerTimeKey();
-    const tpl = state?.meta?.paths?.per_time?.[key];
-    if(!tpl || typeof tpl!=="string") return timeIds;
-
-    const good=[];
-    const CONC=6;
+    const preferred = currentPerTimeKey();
+    const fallbackKeys = [preferred, "phab_scoring", "phab_frontplus", "front", "conf"];
+    const uniqueKeys = [...new Set(fallbackKeys.filter(Boolean))];
+    const good = [];
+    const resolvedKeyByTid = {};
+    const CONC = 6;
     for(let i=0;i<timeIds.length;i+=CONC){
       const chunk = timeIds.slice(i,i+CONC);
       const res = await Promise.all(chunk.map(async tid=>{
-        const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
-        return (await exists(url)) ? tid : null;
+        for(const key of uniqueKeys){
+          const tpl = state?.meta?.paths?.per_time?.[key];
+          if(!tpl || typeof tpl !== "string") continue;
+          const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
+          if(await exists(url)) return {tid, key};
+        }
+        return null;
       }));
-      for(const x of res) if(x) good.push(x);
+      for(const x of res){
+        if(x){
+          good.push(x.tid);
+          resolvedKeyByTid[x.tid] = x.key;
+        }
+      }
     }
+    state.availableLayerKeyByTimeId = resolvedKeyByTid;
     return good;
   }catch(_){
     return timeIds;
@@ -1345,7 +1353,7 @@ let _anTimer = null;
 function scheduleAnalyze(){
   if(!$("autoAnalyzeToggle")?.checked) return;
   clearTimeout(_anTimer);
-  _anTimer = setTimeout(()=>{ try{ computeAndRender(); }catch(_){} }, 320);
+  _anTimer = setTimeout(async ()=>{ try{ await computeAndRender(); }catch(_){/* keep UI quiet while data is not ready */} }, 320);
 }
 
 ["gridToggle","avgToggle","aoiMode","clusterThreshold","clusterEpsKm","clusterMinPts","stepSelect","aggSelect","mapSelect","modelSelect"].forEach(id=>{
@@ -1721,6 +1729,7 @@ function renderAudit(){
    Compute & update view
 ------------------------------ */
 function getSelectedTimes(){
+  if(!Array.isArray(state.times) || !state.times.length) return [];
   const i0 = $("t0Select").selectedIndex;
   const i1 = $("t1Select").selectedIndex;
   const lb = parseInt($("lookbackSelect")?.value || "0", 10);
@@ -1736,11 +1745,8 @@ function getSelectedTimes(){
 
 function mapTitle(){
   const m = $("mapSelect").value;
-  if(m==="pcatch") return "Pcatch (Habitat×Ops)";
   if(m==="phab") return "Habitat Suitability";
-  if(m==="pops") return "Operational Feasibility";
-  if(m==="agree") return "Agreement (ensemble)";
-  if(m==="spread") return "Spread/Std (ensemble)";
+  if(m==="front") return "Frontal Score";
   if(m==="conf") return "Confidence / Opacity";
   return m;
 }
@@ -1863,7 +1869,7 @@ async function computeAndRender(){
   if(!state.grid || !Number.isFinite(state.grid.width) || !Number.isFinite(state.grid.height)){
     throw new Error("Run metadata/grid is not loaded yet. latest/meta_index.json or species meta.json is missing.");
   }
-  if(!Array.isArray(state.timeIsos) || !state.timeIsos.length){
+  if(!Array.isArray(state.times) || !state.times.length){
     throw new Error("No forecast times are available yet for the selected run/species.");
   }
 
@@ -1877,22 +1883,20 @@ async function computeAndRender(){
   async function loadLayerForTime(timeIso){
     const tid = timeIdFromIso(timeIso);
     let key = null;
-    if(mapKey==="pcatch"){
-      key = `pcatch_${modelKey}`;
-    }else if(mapKey==="phab"){
+    if(mapKey==="phab"){
       key = (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-    }else if(mapKey==="pops"){
-      key = "pops";
-    }else if(mapKey==="agree"){
-      key = "agree";
-    }else if(mapKey==="spread"){
-      key = "spread";
+    }else if(mapKey==="front"){
+      key = "front";
     }else if(mapKey==="conf"){
       key = "conf";
     }else{
-      key = `pcatch_${modelKey}`;
+      key = "phab_scoring";
     }
-    const tpl = state.meta.paths.per_time[key];
+    let tpl = state.meta.paths?.per_time?.[key];
+    if((!tpl || typeof tpl !== "string") && key !== "phab_scoring"){
+      key = "phab_scoring";
+      tpl = state.meta.paths?.per_time?.[key];
+    }
     if(!tpl || typeof tpl !== "string"){
       console.warn("Missing layer template:", key);
       return new Float32Array(W*H).fill(NaN);
@@ -1970,25 +1974,43 @@ async function refreshMeta(){
   state.index = await resolveLatestBase();
   const runSelect = $("runSelect");
   runSelect.innerHTML = "";
-  for(const r of state.index.runs){
+  const runs = Array.isArray(state.index?.runs) ? state.index.runs : [];
+  for(const r of runs){
     const opt = document.createElement("option");
     opt.value = r.run_id;
     opt.textContent = `${r.run_id} (${r.fast ? "fast" : "full"})`;
     runSelect.appendChild(opt);
   }
-  state.runId = state.index.latest_run_id || state.index.runs[state.index.runs.length-1]?.run_id;
-  runSelect.value = state.runId;
+  state.runId = state.index.latest_run_id || runs[runs.length-1]?.run_id || null;
+  runSelect.value = state.runId || "";
 
   runSelect.addEventListener("change", async ()=>{
     state.runId = runSelect.value;
     await refreshVariants();
   });
 
+  if(!state.runId){
+    state.times = [];
+    state.timeIsos = [];
+    updateAnalyzeAvailability();
+    if($("availabilityInfo")){
+      $("availabilityInfo").innerHTML = `<b>${lang==="fa" ? "هنوز ران معتبری پیدا نشد" : "No run found yet"}</b><br><span class="muted">${lang==="fa" ? "اول backend را اجرا کن تا latest/ ساخته شود." : "Run the backend once so latest/ is generated."}</span>`;
+    }
+    return;
+  }
+
   await refreshVariants();
 }
 
 async function refreshVariants(){
-  const run = state.index.runs.find(r=>r.run_id===state.runId);
+  const run = (state.index?.runs || []).find(r=>r.run_id===state.runId);
+  if(!run){
+    state.runPath = null;
+    state.times = [];
+    state.timeIsos = [];
+    updateAnalyzeAvailability();
+    return;
+  }
   state.runPath = run.path; // e.g., runs/demo_YYYY-MM-DD
   const variantSelect = $("variantSelect");
   variantSelect.innerHTML = "";
@@ -2013,8 +2035,36 @@ async function refreshVariants(){
   await loadSpeciesMetaAndInit();
 }
 
+function sanitizeUiSelections(){
+  const allowedModels = ["scoring", "frontplus"];
+  const allowedMaps = ["phab", "front", "conf"];
+  const allowedAggs = ["p90", "mean"];
+  if(!allowedModels.includes(state.model)) state.model = "scoring";
+  if(!allowedMaps.includes(state.map)) state.map = "phab";
+  if(!allowedAggs.includes(state.agg)) state.agg = "p90";
+  if($("modelSelect")) $("modelSelect").value = state.model;
+  if($("mapSelect")) $("mapSelect").value = state.map;
+  if($("aggSelect")) $("aggSelect").value = state.agg;
+}
+
+function updateAnalyzeAvailability(){
+  const ready = Array.isArray(state.times) && state.times.length > 0;
+  if($("analyzeBtn")) $("analyzeBtn").disabled = !ready;
+  if($("timeSlider")){
+    $("timeSlider").max = String(Math.max(0, (state.times?.length || 1) - 1));
+    $("timeSlider").disabled = !ready;
+  }
+  if(!ready){
+    safeText("dirtyHint", (lang==="fa") ? "هنوز هیچ زمانِ آماده‌ای پیدا نشد" : "No ready forecast times yet");
+    if($("top10Table")){
+      $("top10Table").innerHTML = `<div class="muted small">${(lang==="fa") ? "فعلاً خروجی زمانی آماده نشده است. بعد از اتمام ران دوباره Refresh/Analyze بزن." : "No forecast layers are ready yet. After the backend run finishes, refresh and analyze again."}</div>`;
+    }
+  }
+}
+
 async function loadSpeciesMetaAndInit(){
   state.species = $("speciesSelect").value;
+  sanitizeUiSelections();
   // species meta path:
   const url = latestUrl(`${state.runPath}/variants/${state.variant}/species/${state.species}/meta.json`);
   state.meta = await fetchJson(url);
@@ -2036,6 +2086,7 @@ async function loadSpeciesMetaAndInit(){
   state.timeIds = await filterTimeIdsByExistingLayer(availableTimeIds);
   // keep derived ISO list in sync
   state.times = state.timeIds.map(timeIdToIso);
+  state.timeIsos = state.times.slice();
   state.isoToTimeId = {};
   for(let i=0;i<state.times.length;i++){ state.isoToTimeId[state.times[i]] = state.timeIds[i]; }
 
@@ -2060,15 +2111,18 @@ async function loadSpeciesMetaAndInit(){
     $("t1Select").appendChild(o1);
   }
   // default: latest single time (for planning)
-  const last = Math.max(0, state.times.length-1);
-  $("t0Select").selectedIndex = last;
-  $("t1Select").selectedIndex = last;
+  if(state.times.length){
+    const last = Math.max(0, state.times.length-1);
+    $("t0Select").selectedIndex = last;
+    $("t1Select").selectedIndex = last;
+  }
 
   // defaults persisted
   $("speciesSelect").value = state.species;
   $("modelSelect").value = state.model;
   $("mapSelect").value = state.map;
   $("aggSelect").value = state.agg;
+  updateAnalyzeAvailability();
 
   // Per‑species lookback memory (each species can have its own averaging window)
   try{

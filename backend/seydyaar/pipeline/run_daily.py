@@ -120,6 +120,7 @@ _GLOBAL_DEPTH_RESOLVER = _DepthResolver()
 class RuntimeFlags:
     front_persist_3d: bool = True
     front_persist_7d: bool = False
+    enable_ops: bool = False
     enable_eddy: bool = True
     enable_vertical: bool = True
     enable_chl_7d: bool = True
@@ -142,6 +143,7 @@ def _runtime_flags() -> RuntimeFlags:
     return RuntimeFlags(
         front_persist_3d=_env_flag("SEYDYAAR_ENABLE_FRONT_PERSIST_3D", True),
         front_persist_7d=_env_flag("SEYDYAAR_ENABLE_FRONT_PERSIST_7D", False),
+        enable_ops=_env_flag("SEYDYAAR_ENABLE_OPS", False),
         enable_eddy=_env_flag("SEYDYAAR_ENABLE_EDDY", True),
         enable_vertical=_env_flag("SEYDYAAR_ENABLE_VERTICAL", True),
         enable_chl_7d=_env_flag("SEYDYAAR_ENABLE_CHL_7D", True),
@@ -300,7 +302,8 @@ def _wind_proxy_from_surface(layers: Dict[str, np.ndarray]) -> Dict[str, np.ndar
     u = np.asarray(layers.get("u_current_m_s"), np.float32)
     v = np.asarray(layers.get("v_current_m_s"), np.float32)
     cur = np.asarray(layers.get("current_m_s"), np.float32)
-    waves = np.asarray(layers.get("waves_hs_m"), np.float32)
+    waves_src = layers.get("waves_hs_m")
+    waves = np.asarray(waves_src, np.float32) if waves_src is not None else np.zeros_like(cur, dtype=np.float32)
     direction = np.arctan2(v, u)
     speed = np.clip(2.0 * waves + 1.5 * cur, 0.0, 18.0).astype(np.float32)
     return {
@@ -316,6 +319,7 @@ def _try_copernicus_layers(
     ts_iso: str,
     datasets_cfg: Dict[str, Any],
     flags: RuntimeFlags,
+    required_keys: Optional[set[str]] = None,
 ) -> Tuple[Optional[Dict[str, np.ndarray]], Dict[str, Any]]:
     if isinstance(datasets_cfg, dict) and "cmems" in datasets_cfg and isinstance(datasets_cfg["cmems"], dict):
         datasets_cfg = datasets_cfg["cmems"]
@@ -332,7 +336,8 @@ def _try_copernicus_layers(
         status["errors"].append(f"copernicusmarine import failed: {e}")
         return None, status
 
-    for k in ["sst", "chl", "ssh", "currents", "waves"]:
+    req = set(required_keys or {"sst", "chl", "ssh", "currents"})
+    for k in sorted(req):
         if not str(datasets_cfg.get(k, {}).get("dataset_id", "")).strip():
             status["errors"].append(f"datasets.json missing dataset_id for '{k}'")
             return None, status
@@ -440,29 +445,36 @@ def _try_copernicus_layers(
 
     out: Dict[str, np.ndarray] = {}
     try:
-        p_sst = _subset_one("sst")
-        out["sst_c"] = _to_grid(_read_nc_vars(p_sst, _vnames("sst"))[_vnames("sst")[0]])
+        if "sst" in req:
+            p_sst = _subset_one("sst")
+            out["sst_c"] = _to_grid(_read_nc_vars(p_sst, _vnames("sst"))[_vnames("sst")[0]])
 
-        p_chl = _subset_one("chl")
-        out["chl_mg_m3"] = _to_grid(_read_nc_vars(p_chl, _vnames("chl"))[_vnames("chl")[0]])
+        if "chl" in req:
+            p_chl = _subset_one("chl")
+            out["chl_mg_m3"] = _to_grid(_read_nc_vars(p_chl, _vnames("chl"))[_vnames("chl")[0]])
 
-        p_ssh = _subset_one("ssh")
-        out["ssh_m"] = _to_grid(_read_nc_vars(p_ssh, _vnames("ssh"))[_vnames("ssh")[0]])
+        if "ssh" in req:
+            p_ssh = _subset_one("ssh")
+            out["ssh_m"] = _to_grid(_read_nc_vars(p_ssh, _vnames("ssh"))[_vnames("ssh")[0]])
 
-        p_cur = _subset_one("currents")
-        cur_names = _vnames("currents")
-        vv = _read_nc_vars(p_cur, cur_names[:2])
-        u = _to_grid(vv[cur_names[0]])
-        v = _to_grid(vv[cur_names[1]])
-        out["u_current_m_s"] = u.astype(np.float32)
-        out["v_current_m_s"] = v.astype(np.float32)
-        out["current_m_s"] = np.sqrt(u.astype(np.float64) ** 2 + v.astype(np.float64) ** 2).astype(np.float32)
+        if "currents" in req:
+            p_cur = _subset_one("currents")
+            cur_names = _vnames("currents")
+            vv = _read_nc_vars(p_cur, cur_names[:2])
+            u = _to_grid(vv[cur_names[0]])
+            v = _to_grid(vv[cur_names[1]])
+            out["u_current_m_s"] = u.astype(np.float32)
+            out["v_current_m_s"] = v.astype(np.float32)
+            out["current_m_s"] = np.sqrt(u.astype(np.float64) ** 2 + v.astype(np.float64) ** 2).astype(np.float32)
 
-        p_waves = _subset_one("waves")
-        out["waves_hs_m"] = _to_grid(_read_nc_vars(p_waves, _vnames("waves"))[_vnames("waves")[0]])
+        if "waves" in req:
+            p_waves = _subset_one("waves")
+            out["waves_hs_m"] = _to_grid(_read_nc_vars(p_waves, _vnames("waves"))[_vnames("waves")[0]])
 
         if flags.enable_vertical:
             for key, out_key in (("sss", "sss_psu"), ("mld", "mld_m"), ("o2", "o2_mmol_m3")):
+                if key not in req:
+                    continue
                 cfg = datasets_cfg.get(key, {})
                 if not str(cfg.get("dataset_id", "")).strip():
                     continue
@@ -473,7 +485,7 @@ def _try_copernicus_layers(
                 except Exception as ee:
                     status["warnings"].append(f"{key} optional layer skipped: {ee}")
 
-        if flags.enable_npp_anom:
+        if flags.enable_npp_anom and "npp" in req:
             cfg = datasets_cfg.get("npp", {})
             if str(cfg.get("dataset_id", "")).strip():
                 try:
@@ -640,12 +652,25 @@ def run_daily(
     else:
         verify_time_id = None
 
+    def _has_w(weights: Dict[str, Any], *keys: str) -> bool:
+        return any(float(weights.get(k, 0.0) or 0.0) > 0.0 for k in keys)
+
+    required_keys: set[str] = {"sst", "chl", "ssh", "currents"}
+    for _sp, _prof in selected_profiles.items():
+        _w = _prof.get("layer_weights", {})
+        if flags.enable_vertical and _has_w(_w, "vertical", "thermocline"):
+            required_keys.update({"sss", "mld", "o2"})
+        if flags.enable_npp_anom and _has_w(_w, "npp_anom"):
+            required_keys.add("npp")
+    if flags.enable_ops:
+        required_keys.add("waves")
+
     # Fetch each timestamp exactly once, then reuse for all species and for lag/persistence features.
     layers_by_tid: Dict[str, Dict[str, np.ndarray]] = {}
     provider_status_by_tid: Dict[str, Dict[str, Any]] = {}
     for ts_iso in ts_list:
         tid = id_by_iso[ts_iso]
-        layers, status = _try_copernicus_layers(grid, bbox, ts_iso, datasets_cfg, flags) if datasets_cfg else (None, {"provider": "none", "ok": False, "errors": ["no datasets.json"]})
+        layers, status = _try_copernicus_layers(grid, bbox, ts_iso, datasets_cfg, flags, required_keys=required_keys) if datasets_cfg else (None, {"provider": "none", "ok": False, "errors": ["no datasets.json"]})
         if layers is None:
             if strict_cmems:
                 raise RuntimeError("Copernicus download failed (strict mode): " + "; ".join(status.get("errors", [])))
@@ -690,26 +715,19 @@ def run_daily(
             "paths": {
                 "mask": f"variants/{variant}/species/{sp}/mask_u8.bin",
                 "per_time": {
-                    "pcatch_scoring": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_scoring_f32.bin",
-                    "pcatch_frontplus": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_frontplus_f32.bin",
-                    "pcatch_ensemble": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_ensemble_f32.bin",
                     "phab_scoring": f"variants/{variant}/species/{sp}/times/{{time}}/phab_f32.bin",
-                    "phab_frontplus": f"variants/{variant}/species/{sp}/times/{{time}}/phab_f32.bin",
-                    "pops": f"variants/{variant}/species/{sp}/times/{{time}}/pops_f32.bin",
-                    "agree": f"variants/{variant}/species/{sp}/times/{{time}}/agree_f32.bin",
-                    "spread": f"variants/{variant}/species/{sp}/times/{{time}}/spread_f32.bin",
+                    "phab_frontplus": f"variants/{variant}/species/{sp}/times/{{time}}/phab_frontplus_f32.bin",
                     "front": f"variants/{variant}/species/{sp}/times/{{time}}/front_f32.bin",
                     "sst": f"variants/{variant}/species/{sp}/times/{{time}}/sst_f32.bin",
                     "chl": f"variants/{variant}/species/{sp}/times/{{time}}/chl_f32.bin",
                     "current": f"variants/{variant}/species/{sp}/times/{{time}}/current_f32.bin",
-                    "waves": f"variants/{variant}/species/{sp}/times/{{time}}/waves_f32.bin",
                     "conf": f"variants/{variant}/species/{sp}/times/{{time}}/conf_f32.bin",
                     "qc_chl": f"variants/{variant}/species/{sp}/times/{{time}}/qc_chl_u8.bin"
                 }
             },
             "model_info": {
                 "habitat": {"priors": priors, "weights": weights},
-                "ops": {"priors": ops_priors, "gear_depths_m": gear_depths_m},
+                "ops": {"enabled": bool(flags.enable_ops), "priors": ops_priors, "gear_depths_m": gear_depths_m},
                 "runtime_flags": flags.__dict__,
             },
         }
@@ -722,7 +740,7 @@ def run_daily(
         for ts_iso in ts_list:
             tid = id_by_iso[ts_iso]
             tdir = times_root / tid
-            if (not force) and (tdir / "pcatch_scoring_f32.bin").exists():
+            if (not force) and (tdir / "phab_f32.bin").exists():
                 provider_status.append({"timestamp": ts_iso, "skipped": True, "reason": "already_exists"})
                 continue
             layers = layers_by_tid[tid]
@@ -796,28 +814,20 @@ def run_daily(
                 thermocline_proxy=thermo,
             )
             phab, _ = habitat_scoring(inputs, priors=priors, weights=weights)
-            pops = ops_feasibility(cur, waves, ops_priors, gear_depth_m=10.0, wind_speed_m_s=ws)
-            pcatch = np.clip(phab * pops, 0.0, 1.0).astype(np.float32)
             front_mult = np.clip(0.92 + 0.22 * front_fused, 0.90, 1.14).astype(np.float32)
-            frontplus = np.clip(pcatch * front_mult, 0.0, 1.0).astype(np.float32)
-            ens = np.nanmean(np.stack([pcatch, frontplus], axis=0), axis=0).astype(np.float32)
-            agree, spread = ensemble_stats([pcatch, frontplus])
+            phab_frontplus = np.clip(phab * front_mult, 0.0, 1.0).astype(np.float32)
 
             tdir.mkdir(parents=True, exist_ok=True)
-            write_bin_f32(tdir / "pcatch_scoring_f32.bin", pcatch)
-            write_bin_f32(tdir / "pcatch_frontplus_f32.bin", frontplus)
-            write_bin_f32(tdir / "pcatch_ensemble_f32.bin", ens)
             write_bin_f32(tdir / "phab_f32.bin", phab)
-            write_bin_f32(tdir / "pops_f32.bin", pops)
-            write_bin_f32(tdir / "agree_f32.bin", agree)
-            write_bin_f32(tdir / "spread_f32.bin", spread)
+            write_bin_f32(tdir / "phab_frontplus_f32.bin", phab_frontplus)
             write_bin_f32(tdir / "front_f32.bin", front_fused)
             write_bin_f32(tdir / "sst_f32.bin", sst.astype(np.float32))
             write_bin_f32(tdir / "chl_f32.bin", chl.astype(np.float32))
             write_bin_f32(tdir / "current_f32.bin", cur.astype(np.float32))
-            write_bin_f32(tdir / "waves_f32.bin", waves.astype(np.float32))
             write_bin_u8(tdir / "qc_chl_u8.bin", layers["qc_chl"])
             write_bin_f32(tdir / "conf_f32.bin", layers["conf"])
+            if flags.enable_ops and "waves_hs_m" in layers:
+                write_bin_f32(tdir / "waves_f32.bin", layers["waves_hs_m"].astype(np.float32))
 
             if flags.write_extended_layers:
                 if eke is not None:
@@ -866,7 +876,7 @@ def run_daily(
         "time_count": len(time_ids),
         "variants": [variant],
         "species": list(selected_profiles.keys()),
-        "models": ["scoring", "frontplus", "ensemble"],
+        "models": ["scoring", "frontplus"],
         "generated_at_utc": now_utc.isoformat().replace("+00:00", "Z"),
     }
     # Refresh top-level meta with the final species list/time ids.
