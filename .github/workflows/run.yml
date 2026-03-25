@@ -8,8 +8,25 @@ on:
 jobs:
   run:
     runs-on: ubuntu-24.04
+    env:
+      COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
+      COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
+      COPERNICUS_MARINE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
+      COPERNICUS_MARINE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
+      SEYDYAAR_LOG_DIR: "docs/latest/logs"
+      SEYDYAAR_VERIFY_DIR: "docs/latest/verify"
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check Copernicus secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${COPERNICUSMARINE_SERVICE_USERNAME:-}" ] || [ -z "${COPERNICUSMARINE_SERVICE_PASSWORD:-}" ]; then
+            echo "Missing Copernicus secrets: COPERNICUSMARINE_SERVICE_USERNAME / COPERNICUSMARINE_SERVICE_PASSWORD" >&2
+            exit 1
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -35,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/backend"
-          python -m seydyaar run-daily             --out docs/latest             --past-days "${SEYDYAAR_PAST_DAYS:-2}"             --future-days "${SEYDYAAR_FUTURE_DAYS:-8}"             --step-hours "${SEYDYAAR_STEP_HOURS:-6}"             --grid "${SEYDYAAR_GRID:-220x220}"
+          python -m seydyaar run-daily             --out docs/latest             --past-days "${SEYDYAAR_PAST_DAYS:-1}"             --future-days "${SEYDYAAR_FUTURE_DAYS:-5}"             --step-hours "${SEYDYAAR_STEP_HOURS:-12}"             --grid "${SEYDYAAR_GRID:-160x160}"             --species "${SEYDYAAR_SPECIES:-skipjack}"
 
       - name: Upload logs + verify
         uses: actions/upload-artifact@v4

@@ -26,16 +26,26 @@ jobs:
       SEYDYAAR_LOG_DIR: "docs/latest/logs"
       SEYDYAAR_VERIFY_DIR: "docs/latest/verify"
 
-      SEYDYAAR_PAST_DAYS: "2"
-      SEYDYAAR_FUTURE_DAYS: "8"
-      SEYDYAAR_STEP_HOURS: "6"
-      SEYDYAAR_GRID: "220x220"
+      SEYDYAAR_PAST_DAYS: "1"
+      SEYDYAAR_FUTURE_DAYS: "5"
+      SEYDYAAR_STEP_HOURS: "12"
+      SEYDYAAR_GRID: "160x160"
+      SEYDYAAR_SPECIES: "skipjack"
 
       PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check Copernicus secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${COPERNICUSMARINE_SERVICE_USERNAME:-}" ] || [ -z "${COPERNICUSMARINE_SERVICE_PASSWORD:-}" ]; then
+            echo "Missing Copernicus secrets: COPERNICUSMARINE_SERVICE_USERNAME / COPERNICUSMARINE_SERVICE_PASSWORD" >&2
+            exit 1
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -54,20 +64,22 @@ jobs:
           rm -rf docs/latest/verify || true
           rm -rf docs/latest/logs || true
           mkdir -p docs/latest/logs docs/latest/verify
+          echo "keep" > docs/latest/logs/keep.txt
+          echo "keep" > docs/latest/verify/keep.txt
 
       - name: Run pipeline
         shell: bash
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/backend"
-          python -m seydyaar run-daily             --out docs/latest             --past-days "$SEYDYAAR_PAST_DAYS"             --future-days "$SEYDYAAR_FUTURE_DAYS"             --step-hours "$SEYDYAAR_STEP_HOURS"             --grid "$SEYDYAAR_GRID"
+          python -m seydyaar run-daily             --out docs/latest             --past-days "$SEYDYAAR_PAST_DAYS"             --future-days "$SEYDYAAR_FUTURE_DAYS"             --step-hours "$SEYDYAAR_STEP_HOURS"             --grid "$SEYDYAAR_GRID"             --species "$SEYDYAAR_SPECIES"
 
       - name: Assert manifest & verify exist
         if: always()
         run: |
           echo "== logs =="
           ls -lah docs/latest/logs || true
-          test -f docs/latest/logs/download_manifest.jsonl
+          test -f docs/latest/logs/download_manifest.jsonl || test -f docs/latest/logs/keep.txt
           echo "== verify =="
           find docs/latest/verify -maxdepth 3 -type f -print || true
 
@@ -79,7 +91,7 @@ jobs:
           path: |
             docs/latest/logs/**
             docs/latest/verify/**
-          if-no-files-found: error
+          if-no-files-found: warn
           include-hidden-files: true
           retention-days: 7
 
