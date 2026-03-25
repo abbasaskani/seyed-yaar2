@@ -616,14 +616,6 @@ function gridIndexFromLatLon(lat, lon){
   return latLonToXY(lat, lon);
 }
 
-function snapLatLonToGridCell(lat, lon){
-  const idx = gridIndexFromLatLon(lat, lon);
-  if(!idx) return null;
-  const center = xyToLatLon(idx.x, idx.y);
-  if(!center) return null;
-  return { ...center, idx };
-}
-
 function rankFromPercentile(pct){
   const n = state._distVals?.length || 0;
   if(!n || pct==null) return null;
@@ -639,7 +631,7 @@ async function getValueAtIndexForKey(timeIso, key, idx){
   if(!arr){
     const tpl = state.meta?.paths?.per_time?.[key];
     if(!tpl) return null;
-    const url = `latest/${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`;
+    const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
     arr = await fetchBin(url, "f32");
     state._binCache.set(cacheKey, arr);
     // simple cache size limit
@@ -685,7 +677,7 @@ async function showPointPopup(lat, lon, metaInfo){
         if(!tpl) continue;
         try{
           if(!state._layerCache[timeId][key]){
-            const url = `latest/${state.runPath}/${tpl.replace("{time}", timeId).replace("{time_id}", timeId)}`;
+            const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", timeId).replace("{time_id}", timeId)}`);
             state._layerCache[timeId][key] = await fetchBin(url, "f32");
           }
           const a = state._layerCache[timeId][key];
@@ -1225,7 +1217,7 @@ function mergeAndSortTimeIds(a,b){
 async function scanTimeIdsFromTimesDir(){
   // Works on local python http.server (directory listing). On GitHub Pages it may return 404/HTML without listing.
   try{
-    const base = `latest/${state.runPath}/variants/${state.variant}/species/${state.species}/times/`;
+    const base = latestUrl(`${state.runPath}/variants/${state.variant}/species/${state.species}/times/`);
     const r = await fetch(base, {cache:"no-store"});
     if(!(r.status===200 || r.status===304)) return [];
     const html = await r.text();
@@ -1261,7 +1253,7 @@ async function filterTimeIdsByExistingLayer(timeIds){
     for(let i=0;i<timeIds.length;i+=CONC){
       const chunk = timeIds.slice(i,i+CONC);
       const res = await Promise.all(chunk.map(async tid=>{
-        const url = `latest/${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`;
+        const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
         return (await exists(url)) ? tid : null;
       }));
       for(const x of res) if(x) good.push(x);
@@ -1763,7 +1755,7 @@ async function loadCovAtPoints(timeIso, points){
   const dy = (latMax - latMin) / (H-1);
 
   async function loadArr(key, dtype){
-    const url = `latest/${state.runPath}/${state.meta.paths.per_time[key].replace("{time}", timeId)}`;
+    const url = latestUrl(`${state.runPath}/${state.meta.paths.per_time[key].replace("{time}", timeId)}`);
     return fetchBin(url, dtype);
   }
   const [sst, chl, cur, wav] = await Promise.all([
@@ -1790,7 +1782,7 @@ async function getConfAggregated(timeIsos){
   const W = state.grid.width, H = state.grid.height;
   const promises = timeIsos.map(t=>{
     const tid = timeIdFromIso(t);
-    const url = `latest/${state.runPath}/${state.meta.paths.per_time.conf.replace("{time}", tid)}`;
+    const url = latestUrl(`${state.runPath}/${state.meta.paths.per_time.conf.replace("{time}", tid)}`);
     return fetchBin(url,"f32");
   });
   const arrs = await Promise.all(promises);
@@ -1800,7 +1792,7 @@ async function getConfAggregated(timeIsos){
   if(state.qcOn){
     const qcArrs = await Promise.all(timeIsos.map(async t=>{
       const tid = timeIdFromIso(t);
-      const url = `latest/${state.runPath}/${state.meta.paths.per_time.qc_chl.replace("{time}", tid)}`;
+      const url = latestUrl(`${state.runPath}/${state.meta.paths.per_time.qc_chl.replace("{time}", tid)}`);
       return fetchBin(url,"u8");
     }));
     const qcMean = new Float32Array(conf.length);
@@ -1868,6 +1860,13 @@ async function computeAndRender(){
   localStorage.setItem("map", state.map);
   localStorage.setItem("agg", state.agg);
 
+  if(!state.grid || !Number.isFinite(state.grid.width) || !Number.isFinite(state.grid.height)){
+    throw new Error("Run metadata/grid is not loaded yet. latest/meta_index.json or species meta.json is missing.");
+  }
+  if(!Array.isArray(state.timeIsos) || !state.timeIsos.length){
+    throw new Error("No forecast times are available yet for the selected run/species.");
+  }
+
   const timeIsos = getSelectedTimes();
   const mapKey = $("mapSelect").value;
   const modelKey = $("modelSelect").value;
@@ -1898,7 +1897,7 @@ async function computeAndRender(){
       console.warn("Missing layer template:", key);
       return new Float32Array(W*H).fill(NaN);
     }
-    const url = `latest/${state.runPath}/${tpl.replace("{time}", tid)}`;
+    const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid)}`);
     return fetchBin(url, (key.endsWith("_u8")?"u8":"f32"));
   }
 
@@ -1941,9 +1940,34 @@ async function computeAndRender(){
 /* ------------------------------
    Run/variant/species meta wiring
 ------------------------------ */
+async function resolveLatestBase(){
+  const candidates = [
+    "latest",
+    "./latest",
+    "../latest",
+  ];
+  let lastErr = null;
+  for (const base of candidates) {
+    const url = `${base.replace(/\/$/,"")}/meta_index.json`;
+    try {
+      const data = await fetchJson(url);
+      state.latestBase = base.replace(/\/$/,"");
+      return data;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error("Could not resolve latest/meta_index.json");
+}
+
+function latestUrl(rel){
+  const base = (state.latestBase || "latest").replace(/\/$/,"");
+  return `${base}/${String(rel).replace(/^\/+/,"")}`;
+}
+
 async function refreshMeta(){
   // read meta_index to list runs
-  state.index = await fetchJson("latest/meta_index.json");
+  state.index = await resolveLatestBase();
   const runSelect = $("runSelect");
   runSelect.innerHTML = "";
   for(const r of state.index.runs){
@@ -1992,16 +2016,16 @@ async function refreshVariants(){
 async function loadSpeciesMetaAndInit(){
   state.species = $("speciesSelect").value;
   // species meta path:
-  const url = `latest/${state.runPath}/variants/${state.variant}/species/${state.species}/meta.json`;
+  const url = latestUrl(`${state.runPath}/variants/${state.variant}/species/${state.species}/meta.json`);
   state.meta = await fetchJson(url);
   // run-level meta for availability reporting + deduped time catalog
-  state.runMeta = await fetchJson(`latest/${state.runPath}/meta.json`).catch(()=>null);
+  state.runMeta = await fetchJson(latestUrl(`${state.runPath}/meta.json`)).catch(()=>null);
   state.grid = state.meta.grid;
 
   
   ensureGridBounds();
 // load server mask
-  const maskUrl = `latest/${state.runPath}/${state.meta.paths.mask}`;
+  const maskUrl = latestUrl(`${state.runPath}/${state.meta.paths.mask}`);
   state.baseMask = await fetchBin(maskUrl, "u8");
 
   // effective analysis mask = server mask × user AOI
@@ -2594,11 +2618,16 @@ $("exportFbBtn").addEventListener("click", async ()=>{
 initMap();
 // Ensure tiles render even if the layout/CSS loads slightly later
 setTimeout(()=>{ try{ map?.invalidateSize(true); }catch(_){} }, 120);
-refreshMeta().catch(err=>{
+const analyzeBtn = $("analyzeBtn");
+if (analyzeBtn) analyzeBtn.disabled = true;
+refreshMeta().then(()=>{
+  if (analyzeBtn) analyzeBtn.disabled = false;
+}).catch(err=>{
   console.error(err);
-  toast(lang==="fa" ? "داده‌ای در مسیر /latest پیدا نشد. اگر هنوز خروجی تولید نکردی، Workflow GitHub Action را اجرا کن." : "No data found under /latest. If you haven't generated outputs yet, run the GitHub Action (Run generator) to create docs/latest.", "err", lang==="fa"?"خطا":"Error");
+  if (analyzeBtn) analyzeBtn.disabled = true;
+  toast(lang==="fa" ? "فایل latest/meta_index.json در ریشهٔ پروژه پیدا نشد. اول باید backend را با --out latest اجرا کنی تا latest/ ساخته شود." : "latest/meta_index.json was not found at the project root. Run the backend first with --out latest so the latest/ folder is generated.", "err", lang==="fa"?"خطا":"Error");
   const hint = $("dirtyHint");
-  if(hint) hint.textContent = (lang==="fa") ? "داده موجود نیست — ابتدا خروجی بساز" : "No data — generate outputs first";
+  if(hint) hint.textContent = (lang==="fa") ? "هنوز خروجی latest ساخته نشده است" : "latest outputs have not been generated yet";
 })
 function getSelectedTimeIndex(){
   return $("t1Select")?.selectedIndex ?? 0;

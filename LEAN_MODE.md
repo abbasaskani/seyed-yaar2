@@ -8,7 +8,7 @@ python -m venv .venv
 pip install -r requirements.txt
 cd ..
 $env:PYTHONPATH=(Resolve-Path .\backend).Path
-python -m seydyaar run-daily --out docs/latest
+python -m seydyaar run-daily --out latest
 ```
 
 ## What the default optimized run does

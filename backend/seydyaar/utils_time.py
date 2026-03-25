@@ -44,16 +44,26 @@ def _parse_anchor_date(anchor_date: str, now_utc: dt.datetime) -> dt.datetime:
     d = dt.date.fromisoformat(anchor_date)
     return dt.datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=dt.timezone.utc)
 
-def timestamps_for_range(anchor_date: str = "today", past_days: int = 0, future_days: int = 0, step_hours: int =  6) -> list[str]:
+def timestamps_for_range(anchor_date: str = "today", past_days: int = 0, future_days: int = 0, step_hours: int = 12) -> list[str]:
     now_utc, _ = trusted_utc_now()
     anchor = _parse_anchor_date(anchor_date, now_utc)
-    start = anchor - dt.timedelta(days=max(past_days, 0))
-    end = anchor + dt.timedelta(days=max(future_days, 0))
-    step = dt.timedelta(hours=max(step_hours, 1))
-    # include end day 23:59 by stepping until <= end+23h
-    t = start
+    start_day = anchor - dt.timedelta(days=max(past_days, 0))
+    end_day = anchor + dt.timedelta(days=max(future_days, 0))
+    step_hours = max(int(step_hours), 1)
+
     out: list[str] = []
-    while t <= end + dt.timedelta(hours=23):
+    if step_hours == 12:
+        day = start_day
+        while day <= end_day:
+            for hour in (6, 18):
+                t = dt.datetime(day.year, day.month, day.day, hour, 0, 0, tzinfo=dt.timezone.utc)
+                out.append(t.isoformat())
+            day += dt.timedelta(days=1)
+        return out
+
+    step = dt.timedelta(hours=step_hours)
+    t = start_day
+    while t <= end_day + dt.timedelta(hours=23):
         out.append(t.isoformat())
         t += step
     return out

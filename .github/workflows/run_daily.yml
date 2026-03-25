@@ -23,13 +23,14 @@ jobs:
       SEYDYAAR_REWRITE: "1"
 
       SEYDYAAR_TMPDIR: "backend/.seydyaar_tmp"
-      SEYDYAAR_LOG_DIR: "docs/latest/logs"
-      SEYDYAAR_VERIFY_DIR: "docs/latest/verify"
+      SEYDYAAR_LOG_DIR: "latest/logs"
+      SEYDYAAR_VERIFY_DIR: "latest/verify"
 
-      SEYDYAAR_PAST_DAYS: "2"
-      SEYDYAAR_FUTURE_DAYS: "8"
-      SEYDYAAR_STEP_HOURS: "6"
-      SEYDYAAR_GRID: "220x220"
+      SEYDYAAR_PAST_DAYS: "1"
+      SEYDYAAR_FUTURE_DAYS: "5"
+      SEYDYAAR_STEP_HOURS: "12"
+      SEYDYAAR_GRID: "160x160"
+      SEYDYAAR_SPECIES: "skipjack"
 
       PYTHONUNBUFFERED: "1"
 
@@ -50,26 +51,26 @@ jobs:
 
       - name: Clean previous outputs (rewrite)
         run: |
-          rm -rf docs/latest/runs/main || true
-          rm -rf docs/latest/verify || true
-          rm -rf docs/latest/logs || true
-          mkdir -p docs/latest/logs docs/latest/verify
+          rm -rf latest/runs/main || true
+          rm -rf latest/verify || true
+          rm -rf latest/logs || true
+          mkdir -p latest/logs latest/verify
 
       - name: Run pipeline
         shell: bash
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/backend"
-          python -m seydyaar run-daily             --out docs/latest             --past-days "$SEYDYAAR_PAST_DAYS"             --future-days "$SEYDYAAR_FUTURE_DAYS"             --step-hours "$SEYDYAAR_STEP_HOURS"             --grid "$SEYDYAAR_GRID"
+          python -m seydyaar run-daily             --out latest             --past-days "$SEYDYAAR_PAST_DAYS"             --future-days "$SEYDYAAR_FUTURE_DAYS"             --step-hours "$SEYDYAAR_STEP_HOURS"             --grid "$SEYDYAAR_GRID"             --species "$SEYDYAAR_SPECIES"
 
       - name: Assert manifest & verify exist
         if: always()
         run: |
           echo "== logs =="
-          ls -lah docs/latest/logs || true
-          test -f docs/latest/logs/download_manifest.jsonl
+          ls -lah latest/logs || true
+          test -f latest/logs/download_manifest.jsonl
           echo "== verify =="
-          find docs/latest/verify -maxdepth 3 -type f -print || true
+          find latest/verify -maxdepth 3 -type f -print || true
 
       - name: Upload verify + logs as artifact
         if: always()
@@ -77,8 +78,8 @@ jobs:
         with:
           name: seydyaar_verify_and_logs
           path: |
-            docs/latest/logs/**
-            docs/latest/verify/**
+            latest/logs/**
+            latest/verify/**
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
@@ -88,6 +89,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/latest
-          git commit -m "Update docs/latest (auto)" || echo "No changes to commit"
+          git add latest
+          git commit -m "Update latest (auto)" || echo "No changes to commit"
           git push

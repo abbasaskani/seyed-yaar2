@@ -1,6 +1,6 @@
 /* Seyd‑Yaar Service Worker — cache static assets, but ALWAYS refresh dynamic data (latest/ + runs/) */
 
-const CACHE = "seydyaar-v0.4.0"; // bump this when you change SW
+const CACHE = "seydyaar-v0.5.0"; // bump this when you change SW
 
 // Only STATIC assets here. ❗Do NOT pre-cache latest/* or runs/*
 const CORE = [
@@ -65,7 +65,10 @@ self.addEventListener("fetch", (event) => {
           }
           return res;
         })
-        .catch(() => caches.match(req))
+        .catch(async () => {
+          const hit = await caches.match(req);
+          return hit || new Response("Offline and not cached", { status: 503, statusText: "Service Unavailable" });
+        })
     );
     return;
   }
