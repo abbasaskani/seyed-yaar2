@@ -128,15 +128,26 @@ $("sheetHandle")?.addEventListener("click", ()=>{
 /* ------------------------------
    Data loading (meta + binaries)
 ------------------------------ */
+const _savedSpecies = localStorage.getItem("species") || "skipjack";
+const _savedModelRaw = localStorage.getItem("model") || "scoring";
+const _savedMapRaw = localStorage.getItem("map") || "phab";
+const _savedAggRaw = localStorage.getItem("agg") || "p90";
+const _savedModel = (["scoring","frontplus"].includes(_savedModelRaw) ? _savedModelRaw : "scoring");
+const _savedMap = (["phab","front","conf"].includes(_savedMapRaw) ? _savedMapRaw : "phab");
+const _savedAgg = (["p90","mean"].includes(_savedAggRaw) ? _savedAggRaw : "p90");
+if(_savedModel !== _savedModelRaw) localStorage.setItem("model", _savedModel);
+if(_savedMap !== _savedMapRaw) localStorage.setItem("map", _savedMap);
+if(_savedAgg !== _savedAggRaw) localStorage.setItem("agg", _savedAgg);
+
 const state = {
   index: null,
   runId: null,
   runPath: null,
   variant: "gapfill",
-  species: localStorage.getItem("species") || "skipjack",
-  model: localStorage.getItem("model") || "ensemble",
-  map: localStorage.getItem("map") || "pcatch",
-  agg: localStorage.getItem("agg") || "p90",
+  species: _savedSpecies,
+  model: _savedModel,
+  map: _savedMap,
+  agg: _savedAgg,
   times: [],
   t0: null,
   t1: null,
@@ -670,7 +681,7 @@ async function showPointPopup(lat, lon, metaInfo){
       state._layerCache = state._layerCache || {};
       state._layerCache[timeId] = state._layerCache[timeId] || {};
 
-      const wantKeys = ["pcatch_ensemble","phab_scoring","pops"];
+      const wantKeys = ["phab_scoring","phab_frontplus","front","conf"];
       const parts = [];
       for(const key of wantKeys){
         const tpl = state.meta.paths.per_time[key];
@@ -1231,15 +1242,12 @@ async function scanTimeIdsFromTimesDir(){
 }
 
 function currentPerTimeKey(){
-  const mapKey = $("mapSelect")?.value || "pcatch";
-  const modelKey = $("modelSelect")?.value || "ensemble";
-  if(mapKey==="pcatch") return `pcatch_${modelKey}`;
+  const mapKey = $("mapSelect")?.value || "phab";
+  const modelKey = $("modelSelect")?.value || "scoring";
   if(mapKey==="phab") return (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-  if(mapKey==="pops") return "pops";
-  if(mapKey==="agree") return "agree";
-  if(mapKey==="spread") return "spread";
+  if(mapKey==="front") return "front";
   if(mapKey==="conf") return "conf";
-  return `pcatch_${modelKey}`;
+  return (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
 }
 
 async function filterTimeIdsByExistingLayer(timeIds){
@@ -1877,20 +1885,14 @@ async function computeAndRender(){
   async function loadLayerForTime(timeIso){
     const tid = timeIdFromIso(timeIso);
     let key = null;
-    if(mapKey==="pcatch"){
-      key = `pcatch_${modelKey}`;
-    }else if(mapKey==="phab"){
+    if(mapKey==="phab"){
       key = (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-    }else if(mapKey==="pops"){
-      key = "pops";
-    }else if(mapKey==="agree"){
-      key = "agree";
-    }else if(mapKey==="spread"){
-      key = "spread";
+    }else if(mapKey==="front"){
+      key = "front";
     }else if(mapKey==="conf"){
       key = "conf";
     }else{
-      key = `pcatch_${modelKey}`;
+      key = (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
     }
     const tpl = state.meta.paths.per_time[key];
     if(!tpl || typeof tpl !== "string"){
