@@ -1,23 +1,35 @@
+# CHANGES APPLIED — lean optimized backend
 
-# Changes Applied
+## Main runtime defaults
+- skipjack-only by default
+- past-days = 1
+- future-days = 5
+- step-hours = 12
+- grid = 160x160
 
-## Backend completed
-- Added BOA front layers for SST and logCHL.
-- Added SSH front and 3d/7d front persistence.
-- Added eddy metrics: EKE, vorticity, strain, Okubo-Weiss, eddy-edge distance.
-- Added vertical layers: MLD, O2, SSS and derived vertical_access.
-- Added lagged productivity: CHL 3d/7d means, CHL anomaly, NPP anomaly.
-- Added simple surface wind ops: wind_speed, wind_direction, ops_wind_penalty.
-- Depth-aware datasets now resolve to the depth closest to surface; wind remains surface-only.
-- Added per-time `sanity.json` and per-species `sanity_summary.json` outputs.
-- Species meta now includes `species_profile`, `audit`, `defaults`, and sanity summary.
+## Performance optimizations
+- Copernicus depth describe cached across the full run
+- existing subset NetCDF files are reused instead of re-downloading
+- no extra online wind fetch by default; local ERA5 or cheap proxy only
+- heavy diagnostic/extended layer writes are off by default
+- only the original UI-facing core outputs are written by default
+- front persistence and lag features reuse in-memory time caches
+- netCDF variables are read via netCDF4 instead of repeated rasterio opens
 
-## Front-end completed
-- Map selector now exposes advanced backend layers dynamically from `meta.paths.per_time`.
-- Nonstandard layers can be selected directly without changing the UI layout.
-- Profile and audit panels now show the added backend feature family and sanity summary.
+## Scientific features kept active
+- BOA SST front
+- BOA logCHL front
+- SSH front
+- 3-day front persistence
+- EKE
+- Okubo-Weiss
+- eddy-edge distance
+- MLD / O2 / SSS / vertical_access
+- CHL 3d mean
+- simple surface wind in ops
 
-## Still intentionally not done
-- Scientific weight tuning / calibration from catches.
-- New UI tabs or major UI redesign.
-- Advanced Lagrangian / LAVD / material-coherence methods.
+## Present in code but off by default
+- 7-day front persistence
+- CHL 7d / CHL anomaly / NPP anomaly
+- vorticity / strain output writes
+- extended diagnostic layer exports

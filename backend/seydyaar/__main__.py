@@ -1,10 +1,4 @@
-"""Seyd‑Yaar CLI entrypoint.
-
-- `demo-generate`: creates a lightweight (synthetic) demo run under docs/latest/
-  so the PWA works fully offline.
-
-For real runs, wire the pipeline to real data sources and schedule it.
-"""
+"""Seyd‑Yaar CLI entrypoint."""
 
 from __future__ import annotations
 
@@ -13,10 +7,8 @@ from pathlib import Path
 
 
 def _try_load_dotenv() -> None:
-    """Load .env if python-dotenv is installed (optional)."""
     try:
         from dotenv import load_dotenv  # type: ignore
-
         load_dotenv()
     except Exception:
         return
@@ -42,44 +34,27 @@ def main() -> None:
     p.add_argument("--date", default="today", help="Run date (YYYY-MM-DD) or 'today'")
     p.add_argument("--past-days", type=int, default=2, help="Past days to include (max 2 recommended)")
     p.add_argument("--future-days", type=int, default=10, help="Future days to include (max 10 recommended)")
-    p.add_argument("--step-hours", type=int, default=6, help="Time step in hours (2 is 'default' for full mode)")
+    p.add_argument("--step-hours", type=int, default=6, help="Time step in hours")
     p.add_argument("--fast", action="store_true", help="Fast demo (coarser grid, fewer background samples)")
     p.add_argument("--out", default=str(Path("docs") / "latest"), help="Output folder")
-
-    # Presence proxy for MaxEnt/PPP
-    p.add_argument(
-        "--presence-mode",
-        choices=["auto", "ais", "weak", "csv"],
-        default="auto",
-        help="Presence proxy mode for PPP/MaxEnt (auto tries AIS first if token available)",
-    )
+    p.add_argument("--presence-mode", choices=["auto", "ais", "weak", "csv"], default="auto")
     p.add_argument("--presence-csv", default="", help="CSV path for presence-only points (optional)")
-
-    # Optional GeoTIFF/COG export
     p.add_argument("--export-cog", action="store_true", help="Write per-time COG GeoTIFFs (larger output)")
+    p.add_argument("--depths", default="5,10,15,20", help="Comma-separated gear depths (m) to precompute")
 
-    # Operational depth menu (precomputed)
-    p.add_argument(
-        "--depths",
-        default="5,10,15,20",
-        help="Comma-separated gear depths (m) to precompute for ops/catch maps",
-    )
-
-    p2 = sub.add_parser("run-daily", help="Run a real (scheduled) pipeline into docs/latest (Copernicus if configured)")
+    p2 = sub.add_parser("run-daily", help="Run the lean online-data pipeline into docs/latest")
     p2.add_argument("--date", default="today", help="Anchor date (YYYY-MM-DD) or 'today' (UTC)")
-    p2.add_argument("--past-days", type=int, default=7, help="Past days to include (max 7 recommended)")
-    p2.add_argument("--future-days", type=int, default=4, help="Future days to include (max 4 recommended)")
-    p2.add_argument("--step-hours", type=int, default=6, help="Time step in hours (default 6)")
+    p2.add_argument("--past-days", type=int, default=1, help="Lean default: 1")
+    p2.add_argument("--future-days", type=int, default=5, help="Lean default: 5")
+    p2.add_argument("--step-hours", type=int, default=12, help="Lean default: 12")
     p2.add_argument("--out", default=str(Path("docs") / "latest"), help="Output folder")
-    p2.add_argument("--grid", default="220x220", help="Grid WxH, e.g. 220x220")
-
-
+    p2.add_argument("--grid", default="160x160", help="Lean default: 160x160")
+    p2.add_argument("--species", default="skipjack", help="Comma-separated species to run (default: skipjack)")
 
     args = parser.parse_args()
 
     if args.cmd == "demo-generate":
         from seydyaar.pipeline.demo_generate import demo_generate
-
         demo_generate(
             date=args.date,
             out_dir=args.out,
@@ -99,7 +74,7 @@ def main() -> None:
 
         aoi = _json.loads((_Path("backend/config/aoi.geojson")).read_text(encoding="utf-8"))
         species_profiles = _json.loads((_Path("backend/config/species_profiles.json")).read_text(encoding="utf-8"))
-
+        species_filter = [s.strip() for s in str(args.species).split(",") if s.strip()]
         run_daily(
             out_root=_Path(args.out),
             aoi_geojson=aoi,
@@ -109,10 +84,8 @@ def main() -> None:
             future_days=int(args.future_days),
             step_hours=int(args.step_hours),
             grid_wh=args.grid,
+            species_filter=species_filter,
         )
-
-
-
 
 
 if __name__ == "__main__":

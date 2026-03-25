@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Sequence
 import math
 import numpy as np
 
@@ -17,36 +17,32 @@ def robust_normalize(a: np.ndarray, lo_q: float = 5.0, hi_q: float = 95.0) -> np
     valid = np.isfinite(arr)
     if not np.any(valid):
         return np.zeros_like(arr, dtype=np.float32)
-    lo, hi = np.nanpercentile(arr, [lo_q, hi_q])
+    lo, hi = np.nanpercentile(arr[valid], [lo_q, hi_q])
     if not np.isfinite(lo):
-        lo = float(np.nanmin(arr))
+        lo = float(np.nanmin(arr[valid]))
     if not np.isfinite(hi):
-        hi = float(np.nanmax(arr))
+        hi = float(np.nanmax(arr[valid]))
     out = (arr - np.float32(lo)) / np.float32((hi - lo) + 1e-9)
     out[~valid] = np.nan
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
-def box_mean(arr: np.ndarray, radius: int = 4) -> np.ndarray:
+def box_mean(arr: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Very light denoise used instead of heavier morphology/CCA-style front methods."""
     a = _nan_to_num(arr)
     r = max(int(radius), 0)
     if r == 0:
         return a.astype(np.float32, copy=False)
     pad = np.pad(a, ((r, r), (r, r)), mode="edge")
-    integ = pad.cumsum(axis=0).cumsum(axis=1)
     h, w = a.shape
-    y0 = np.arange(0, h)
-    y1 = y0 + 2 * r + 1
-    x0 = np.arange(0, w)
-    x1 = x0 + 2 * r + 1
     out = np.empty_like(a, dtype=np.float32)
-    area = float((2 * r + 1) ** 2)
-    for i in range(h):
-        A = integ[y1[i], x1]
-        B = integ[y0[i], x1]
-        C = integ[y1[i], x0]
-        D = integ[y0[i], x0]
-        out[i, :] = (A - B - C + D) / area
+    kernel = 2 * r + 1
+    area = float(kernel * kernel)
+    for y in range(h):
+        ys = y
+        ye = y + kernel
+        window = pad[ys:ye]
+        out[y] = np.add.reduce(window, axis=0)[r:r + w] / area
     return out.astype(np.float32)
 
 
@@ -56,34 +52,51 @@ def gradient_magnitude(arr: np.ndarray) -> np.ndarray:
     return np.sqrt(gx * gx + gy * gy).astype(np.float32)
 
 
-def boa_front(arr: np.ndarray, radius: int = 4) -> np.ndarray:
+def boa_front(arr: np.ndarray, denoise_radius: int = 1, background_radius: int = 3) -> np.ndarray:
+    """Cheap BOA-inspired detector: denoise -> local background removal -> gradient -> robust normalize."""
     a = np.asarray(arr, dtype=np.float32)
-    bg = box_mean(a, radius=radius)
-    anom = a - bg
-    gm = gradient_magnitude(anom)
-    return robust_normalize(gm)
+    sm = box_mean(a, radius=max(denoise_radius, 0)) if denoise_radius > 0 else a
+    bg = box_mean(sm, radius=max(background_radius, 1))
+    anom = sm - bg
+    return robust_normalize(gradient_magnitude(anom))
 
 
 def front_persistence(front_stack: Sequence[np.ndarray]) -> np.ndarray:
     if not front_stack:
-        raise ValueError('front_stack must not be empty')
+        raise ValueError("front_stack must not be empty")
     stack = np.stack([np.asarray(x, dtype=np.float32) for x in front_stack], axis=0)
     return np.nanmean(stack, axis=0).astype(np.float32)
 
 
-def fuse_fronts(front_boa_sst: np.ndarray, front_boa_logchl: np.ndarray, front_ssh: np.ndarray,
-                front_persist_3d: np.ndarray, front_persist_7d: np.ndarray,
-                weights: Dict[str, float] | None = None) -> np.ndarray:
-    w = dict(weights or {"sst": 0.30, "chl": 0.25, "ssh": 0.20, "persist_3d": 0.10, "persist_7d": 0.15})
-    total = sum(max(float(v), 0.0) for v in w.values()) or 1.0
-    out = (
-        max(float(w.get('sst', 0.0)), 0.0) * np.asarray(front_boa_sst, np.float32) +
-        max(float(w.get('chl', 0.0)), 0.0) * np.asarray(front_boa_logchl, np.float32) +
-        max(float(w.get('ssh', 0.0)), 0.0) * np.asarray(front_ssh, np.float32) +
-        max(float(w.get('persist_3d', 0.0)), 0.0) * np.asarray(front_persist_3d, np.float32) +
-        max(float(w.get('persist_7d', 0.0)), 0.0) * np.asarray(front_persist_7d, np.float32)
-    ) / total
-    return robust_normalize(out)
+def fuse_fronts(
+    front_boa_sst: np.ndarray,
+    front_boa_logchl: np.ndarray,
+    front_ssh: np.ndarray,
+    front_persist_3d: np.ndarray | None,
+    front_persist_7d: np.ndarray | None,
+    weights: Dict[str, float] | None = None,
+) -> np.ndarray:
+    w = dict(weights or {"sst": 0.34, "chl": 0.28, "ssh": 0.18, "persist_3d": 0.12, "persist_7d": 0.08})
+    fields = {
+        "sst": np.asarray(front_boa_sst, np.float32),
+        "chl": np.asarray(front_boa_logchl, np.float32),
+        "ssh": np.asarray(front_ssh, np.float32),
+        "persist_3d": np.asarray(front_persist_3d, np.float32) if front_persist_3d is not None else None,
+        "persist_7d": np.asarray(front_persist_7d, np.float32) if front_persist_7d is not None else None,
+    }
+    total = 0.0
+    out = np.zeros_like(front_boa_sst, dtype=np.float32)
+    for key, arr in fields.items():
+        if arr is None:
+            continue
+        weight = max(float(w.get(key, 0.0)), 0.0)
+        if weight <= 0.0:
+            continue
+        out += weight * arr
+        total += weight
+    if total <= 0.0:
+        return robust_normalize(front_boa_sst)
+    return robust_normalize(out / total)
 
 
 def compute_eke(u: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -118,7 +131,7 @@ def compute_okubo_weiss(vorticity: np.ndarray, strain: np.ndarray) -> np.ndarray
 
 def detect_eddy_mask(okubo_weiss: np.ndarray, ssh: np.ndarray | None = None) -> np.ndarray:
     ow = np.asarray(okubo_weiss, np.float32)
-    thr = float(np.nanpercentile(ow, 20))
+    thr = float(np.nanpercentile(ow[np.isfinite(ow)], 20)) if np.any(np.isfinite(ow)) else 0.0
     mask = ow < thr
     if ssh is not None:
         amp = robust_normalize(np.abs(np.asarray(ssh, np.float32)))
@@ -132,7 +145,6 @@ def distance_to_mask(mask: np.ndarray) -> np.ndarray:
     inf = np.float32(1e9)
     dist = np.full((h, w), inf, dtype=np.float32)
     dist[m] = 0.0
-    # 2-pass chamfer-ish distance
     root2 = np.float32(math.sqrt(2.0))
     for y in range(h):
         for x in range(w):
@@ -158,17 +170,19 @@ def distance_to_mask(mask: np.ndarray) -> np.ndarray:
             if x + 1 < w:
                 best = min(best, dist[y, x + 1] + 1.0)
             dist[y, x] = best
-    dist[~np.isfinite(dist)] = np.nanmax(dist[np.isfinite(dist)]) if np.any(np.isfinite(dist)) else 0.0
+    finite = np.isfinite(dist)
+    if np.any(finite):
+        dist[~finite] = np.nanmax(dist[finite])
+    else:
+        dist[:] = 0.0
     return dist.astype(np.float32)
 
 
 def compute_eddy_edge_distance(mask: np.ndarray) -> np.ndarray:
-    edge_dist = distance_to_mask(mask > 0)
-    return robust_normalize(edge_dist)
+    return robust_normalize(distance_to_mask(mask > 0))
 
 
-def rolling_mean(layers_by_tid: Dict[str, Dict[str, np.ndarray]], ordered_time_ids: Sequence[str], current_tid: str,
-                 key: str, window_steps: int) -> np.ndarray:
+def rolling_mean(layers_by_tid: Dict[str, Dict[str, np.ndarray]], ordered_time_ids: Sequence[str], current_tid: str, key: str, window_steps: int) -> np.ndarray:
     idx = ordered_time_ids.index(current_tid)
     lo = max(0, idx - max(int(window_steps), 1) + 1)
     tids = ordered_time_ids[lo:idx + 1]
@@ -181,7 +195,14 @@ def anomaly(arr: np.ndarray, baseline: np.ndarray) -> np.ndarray:
 
 
 def score_mld(mld: np.ndarray) -> np.ndarray:
-    return robust_normalize(np.asarray(mld, np.float32))
+    x = np.asarray(mld, np.float32)
+    valid = np.isfinite(x)
+    if not np.any(valid):
+        return np.zeros_like(x, dtype=np.float32)
+    med = float(np.nanmedian(x))
+    sig = float(max(np.nanstd(x), 5.0))
+    out = np.exp(-0.5 * ((x - med) / sig) ** 2)
+    return robust_normalize(out)
 
 
 def score_o2(o2: np.ndarray) -> np.ndarray:
@@ -189,10 +210,12 @@ def score_o2(o2: np.ndarray) -> np.ndarray:
 
 
 def score_sss(sss: np.ndarray) -> np.ndarray:
-    # mid-range salinity gets a slight preference vs extremes
     x = np.asarray(sss, np.float32)
-    mu = float(np.nanmedian(x)) if np.any(np.isfinite(x)) else 35.0
-    sig = float(max(np.nanstd(x), 0.25)) if np.any(np.isfinite(x)) else 0.5
+    valid = np.isfinite(x)
+    if not np.any(valid):
+        return np.zeros_like(x, dtype=np.float32)
+    mu = float(np.nanmedian(x))
+    sig = float(max(np.nanstd(x), 0.25))
     out = np.exp(-0.5 * ((x - mu) / sig) ** 2)
     return robust_normalize(out)
 
@@ -219,3 +242,14 @@ def wind_penalty(speed: np.ndarray, soft_min: float = 5.0, soft_max: float = 12.
     scale = max((soft_max - soft_min) / 4.0, 0.75)
     out = 1.0 / (1.0 + np.exp((ws - mid) / scale))
     return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
+def thermocline_proxy(mld: np.ndarray) -> np.ndarray:
+    x = np.asarray(mld, np.float32)
+    valid = np.isfinite(x)
+    if not np.any(valid):
+        return np.zeros_like(x, dtype=np.float32)
+    med = float(np.nanmedian(x))
+    sig = float(max(np.nanstd(x), 5.0))
+    out = np.exp(-0.5 * ((x - med) / sig) ** 2)
+    return robust_normalize(out)

@@ -1,5 +1,5 @@
 {
-  "notes": "Seyd‑Yaar datasets (v5). All depth-aware datasets resolve the closest depth to the sea surface (0m). Wind stays surface-only.",
+  "notes": "Lean runtime config. All depth-aware ocean datasets resolve the closest depth to the sea surface (0m). Wind defaults to a cheap surface proxy or local ERA5 if present.",
   "cmems": {
     "sst": {
       "product": "GLOBAL_ANALYSISFORECAST_PHY_001_024",
@@ -11,10 +11,7 @@
     "currents": {
       "product": "GLOBAL_ANALYSISFORECAST_PHY_001_024",
       "dataset_id": "cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i",
-      "variables": [
-        "uo",
-        "vo"
-      ],
+      "variables": ["uo", "vo"],
       "depth_target_m": 0.0,
       "units": "m s-1"
     },
@@ -44,7 +41,7 @@
       "dataset_id": "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
       "variable": "mlotst",
       "units": "m",
-      "notes": "Mixed layer depth; surface diagnostic, no depth selection."
+      "notes": "Surface diagnostic; no depth slice."
     },
     "o2": {
       "product": "GLOBAL_ANALYSISFORECAST_BGC_001_028",
@@ -58,23 +55,21 @@
       "dataset_id": "cmems_mod_glo_phy-so_anfc_0.083deg_PT6H-i",
       "variable": "so",
       "depth_target_m": 0.0,
-      "units": "1e-3"
+      "units": "psu"
     },
     "npp": {
       "product": "GLOBAL_ANALYSISFORECAST_BGC_001_028",
       "dataset_id": "cmems_mod_glo_bgc-bio_anfc_0.25deg_P1D-m",
       "variable": "nppv",
       "depth_target_m": 0.0,
-      "units": "mg C m-3 d-1"
+      "units": "mg C m-3 d-1",
+      "notes": "Optional. Disabled by default in lean mode."
     },
     "wind": {
-      "product": "ERA5-like or surface forcing if available",
-      "dataset_id": "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m",
-      "variables": [
-        "uo",
-        "vo"
-      ],
-      "notes": "Fallback simple surface wind proxy. Replace with true u10/v10 dataset when available."
+      "mode": "local_era5_or_proxy",
+      "local_template": "backend/data/wind/era5_{date}.nc",
+      "variables": ["u10", "v10"],
+      "notes": "Runtime first tries local ERA5 u10/v10. If missing, it falls back to a cheap wave/current proxy to avoid extra network fetches."
     }
   }
 }

@@ -1247,39 +1247,7 @@ function currentPerTimeKey(){
   if(mapKey==="agree") return "agree";
   if(mapKey==="spread") return "spread";
   if(mapKey==="conf") return "conf";
-  if(state?.meta?.paths?.per_time?.[mapKey]) return mapKey;
   return `pcatch_${modelKey}`;
-}
-
-async 
-const MAP_LABELS = {
-  pcatch: "Pcatch (Habitat×Ops)", phab: "Habitat Suitability", pops: "Operational Feasibility",
-  agree: "Agreement (ensemble)", spread: "Spread/Std (ensemble)", conf: "Confidence / Opacity",
-  front: "Front (legacy/fused)", front_boa_sst: "Front — BOA SST", front_boa_logchl: "Front — BOA logCHL",
-  front_ssh: "Front — SSH", front_persist_3d: "Front persistence — 3d", front_persist_7d: "Front persistence — 7d",
-  eke: "EKE", vorticity: "Vorticity", strain: "Strain", okubo_weiss: "Okubo-Weiss", eddy_edge_distance: "Distance to eddy edge",
-  mld: "MLD", o2: "Dissolved oxygen", sss: "Sea-surface salinity", vertical_access: "Vertical access",
-  chl_3d_mean: "CHL mean — 3d", chl_7d_mean: "CHL mean — 7d", chl_anom: "CHL anomaly", npp_anom: "NPP anomaly",
-  wind_speed: "Wind speed", wind_direction: "Wind direction", ops_wind_penalty: "Wind ops penalty",
-  sst: "SST", chl: "Chlorophyll-a", current: "Current speed", waves: "Wave height"
-};
-const BASE_MAP_KEYS = new Set(["pcatch","phab","pops","agree","spread","conf"]);
-function mapLabel(key){ return MAP_LABELS[key] || key.replace(/_/g, " "); }
-function syncDynamicMapOptions(){
-  const sel = $("mapSelect");
-  if(!sel || !state?.meta?.paths?.per_time) return;
-  const dyn = $("dynamicMapOptions");
-  if(dyn) dyn.innerHTML = "";
-  const perTime = state.meta.paths.per_time || {};
-  const keys = Object.keys(perTime).filter(k => !BASE_MAP_KEYS.has(k) && !k.startsWith("pcatch_") && !k.startsWith("phab_"));
-  for(const k of keys){
-    if(sel.querySelector(`option[value="${k}"]`)) continue;
-    const opt = document.createElement("option");
-    opt.value = k;
-    opt.textContent = mapLabel(k);
-    (dyn || sel).appendChild(opt);
-  }
-  if(!sel.querySelector(`option[value="${state.map}"]`)) state.map = "phab";
 }
 
 async function filterTimeIdsByExistingLayer(timeIds){
@@ -1717,17 +1685,12 @@ function renderTop10(list, covs){
 /* ------------------------------
    Profile + audit
 ------------------------------ */
-
 function renderProfile(){
   const sp = state.meta?.species_profile;
   if(!sp){ $("profileBox").innerHTML = "—"; return; }
-  const p = sp.priors || {};
-  const w = sp.layer_weights || {};
-  const ffw = p.front_fusion_weights || {};
+  const p = sp.priors;
+  const w = sp.layer_weights;
   const refs = (sp.references||[]).map(x=>`<li>${x}</li>`).join("");
-  const extraWeights = Object.entries(w)
-    .filter(([k])=>!["temp","chl","front","current","waves"].includes(k))
-    .map(([k,v])=>`<li>${mapLabel(k)}: ${v}</li>`).join("");
   $("profileBox").innerHTML = `
     <div><b>${sp.label?.en || ""}</b> • <span class="muted">${sp.scientific_name||""}</span></div>
     <div class="muted">Region: ${sp.region||"—"}</div>
@@ -1737,21 +1700,16 @@ function renderProfile(){
       <li>Chl opt: ${p.chl_opt_mg_m3} mg/m³ (σ log10=${p.chl_sigma_log10})</li>
       <li>Current opt/sigma: ${p.current_opt_m_s} m/s / ${p.current_sigma_m_s}</li>
       <li>Waves soft max: ${p.waves_hs_soft_max_m} m</li>
-      <li>Wind soft range: ${state.meta?.model_info?.ops?.priors?.wind_soft_min_m_s ?? "—"} → ${state.meta?.model_info?.ops?.priors?.wind_soft_max_m_s ?? "—"} m/s</li>
     </ul>
     <div><b>Layer weights</b></div>
     <ul class="bullets">
-      <li>Temp: ${w.temp ?? "—"} • Chl: ${w.chl ?? "—"} • Front: ${w.front ?? "—"} • Current: ${w.current ?? "—"} • Waves: ${w.waves ?? "—"}</li>
-      ${extraWeights}
+      <li>Temp: ${w.temp} • Chl: ${w.chl} • Front: ${w.front} • Current: ${w.current} • Waves: ${w.waves}</li>
     </ul>
-    <div><b>Front fusion weights</b></div>
-    <ul class="bullets"><li>SST: ${ffw.sst ?? "—"} • Chl: ${ffw.chl ?? "—"} • SSH: ${ffw.ssh ?? "—"} • Persist-3d: ${ffw.persist_3d ?? "—"} • Persist-7d: ${ffw.persist_7d ?? "—"}</li></ul>
     <div><b>Key references</b></div>
     <ul class="bullets">${refs}</ul>
     <div class="muted small">${sp.notes||""}</div>
   `;
 }
-
 
 function renderAudit(){
   const meta = state.meta;
@@ -1761,11 +1719,9 @@ function renderAudit(){
     variant: meta.variant,
     species: meta.species,
     defaults: meta.defaults,
+    ppp_model: meta.ppp_model,
     grid: meta.grid,
     times: meta.times?.length,
-    depth_rule: meta.audit?.depth_rule,
-    features_enabled: meta.audit?.features_enabled,
-    sanity_summary: meta.sanity_summary || null,
   }, null, 2));
 }
 
@@ -1788,7 +1744,13 @@ function getSelectedTimes(){
 
 function mapTitle(){
   const m = $("mapSelect").value;
-  return mapLabel(m);
+  if(m==="pcatch") return "Pcatch (Habitat×Ops)";
+  if(m==="phab") return "Habitat Suitability";
+  if(m==="pops") return "Operational Feasibility";
+  if(m==="agree") return "Agreement (ensemble)";
+  if(m==="spread") return "Spread/Std (ensemble)";
+  if(m==="conf") return "Confidence / Opacity";
+  return m;
 }
 
 async function loadCovAtPoints(timeIso, points){
@@ -2035,8 +1997,8 @@ async function loadSpeciesMetaAndInit(){
   // run-level meta for availability reporting + deduped time catalog
   state.runMeta = await fetchJson(`latest/${state.runPath}/meta.json`).catch(()=>null);
   state.grid = state.meta.grid;
-  syncDynamicMapOptions();
 
+  
   ensureGridBounds();
 // load server mask
   const maskUrl = `latest/${state.runPath}/${state.meta.paths.mask}`;
