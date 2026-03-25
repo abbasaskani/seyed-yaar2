@@ -132,10 +132,10 @@ const state = {
   index: null,
   runId: null,
   runPath: null,
-  variant: "auto",
+  variant: "gapfill",
   species: localStorage.getItem("species") || "skipjack",
-  model: localStorage.getItem("model") || "scoring",
-  map: localStorage.getItem("map") || "phab",
+  model: localStorage.getItem("model") || "ensemble",
+  map: localStorage.getItem("map") || "pcatch",
   agg: localStorage.getItem("agg") || "p90",
   times: [],
   t0: null,
@@ -670,7 +670,7 @@ async function showPointPopup(lat, lon, metaInfo){
       state._layerCache = state._layerCache || {};
       state._layerCache[timeId] = state._layerCache[timeId] || {};
 
-      const wantKeys = ["phab_scoring","phab_frontplus","front","conf"];
+      const wantKeys = ["pcatch_ensemble","phab_scoring","pops"];
       const parts = [];
       for(const key of wantKeys){
         const tpl = state.meta.paths.per_time[key];
@@ -1231,41 +1231,33 @@ async function scanTimeIdsFromTimesDir(){
 }
 
 function currentPerTimeKey(){
-  const mapKey = $("mapSelect")?.value || "phab";
-  const modelKey = $("modelSelect")?.value || "scoring";
+  const mapKey = $("mapSelect")?.value || "pcatch";
+  const modelKey = $("modelSelect")?.value || "ensemble";
+  if(mapKey==="pcatch") return `pcatch_${modelKey}`;
   if(mapKey==="phab") return (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-  if(mapKey==="front") return "front";
+  if(mapKey==="pops") return "pops";
+  if(mapKey==="agree") return "agree";
+  if(mapKey==="spread") return "spread";
   if(mapKey==="conf") return "conf";
-  return "phab_scoring";
+  return `pcatch_${modelKey}`;
 }
 
 async function filterTimeIdsByExistingLayer(timeIds){
   try{
-    const preferred = currentPerTimeKey();
-    const fallbackKeys = [preferred, "phab_scoring", "phab_frontplus", "front", "conf"];
-    const uniqueKeys = [...new Set(fallbackKeys.filter(Boolean))];
-    const good = [];
-    const resolvedKeyByTid = {};
-    const CONC = 6;
+    const key = currentPerTimeKey();
+    const tpl = state?.meta?.paths?.per_time?.[key];
+    if(!tpl || typeof tpl!=="string") return timeIds;
+
+    const good=[];
+    const CONC=6;
     for(let i=0;i<timeIds.length;i+=CONC){
       const chunk = timeIds.slice(i,i+CONC);
       const res = await Promise.all(chunk.map(async tid=>{
-        for(const key of uniqueKeys){
-          const tpl = state?.meta?.paths?.per_time?.[key];
-          if(!tpl || typeof tpl !== "string") continue;
-          const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
-          if(await exists(url)) return {tid, key};
-        }
-        return null;
+        const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
+        return (await exists(url)) ? tid : null;
       }));
-      for(const x of res){
-        if(x){
-          good.push(x.tid);
-          resolvedKeyByTid[x.tid] = x.key;
-        }
-      }
+      for(const x of res) if(x) good.push(x);
     }
-    state.availableLayerKeyByTimeId = resolvedKeyByTid;
     return good;
   }catch(_){
     return timeIds;
@@ -1353,7 +1345,7 @@ let _anTimer = null;
 function scheduleAnalyze(){
   if(!$("autoAnalyzeToggle")?.checked) return;
   clearTimeout(_anTimer);
-  _anTimer = setTimeout(async ()=>{ try{ await computeAndRender(); }catch(_){/* keep UI quiet while data is not ready */} }, 320);
+  _anTimer = setTimeout(()=>{ try{ computeAndRender(); }catch(_){} }, 320);
 }
 
 ["gridToggle","avgToggle","aoiMode","clusterThreshold","clusterEpsKm","clusterMinPts","stepSelect","aggSelect","mapSelect","modelSelect"].forEach(id=>{
@@ -1729,7 +1721,6 @@ function renderAudit(){
    Compute & update view
 ------------------------------ */
 function getSelectedTimes(){
-  if(!Array.isArray(state.times) || !state.times.length) return [];
   const i0 = $("t0Select").selectedIndex;
   const i1 = $("t1Select").selectedIndex;
   const lb = parseInt($("lookbackSelect")?.value || "0", 10);
@@ -1745,8 +1736,11 @@ function getSelectedTimes(){
 
 function mapTitle(){
   const m = $("mapSelect").value;
+  if(m==="pcatch") return "Pcatch (Habitat×Ops)";
   if(m==="phab") return "Habitat Suitability";
-  if(m==="front") return "Frontal Score";
+  if(m==="pops") return "Operational Feasibility";
+  if(m==="agree") return "Agreement (ensemble)";
+  if(m==="spread") return "Spread/Std (ensemble)";
   if(m==="conf") return "Confidence / Opacity";
   return m;
 }
@@ -1869,7 +1863,7 @@ async function computeAndRender(){
   if(!state.grid || !Number.isFinite(state.grid.width) || !Number.isFinite(state.grid.height)){
     throw new Error("Run metadata/grid is not loaded yet. latest/meta_index.json or species meta.json is missing.");
   }
-  if(!Array.isArray(state.times) || !state.times.length){
+  if(!Array.isArray(state.timeIsos) || !state.timeIsos.length){
     throw new Error("No forecast times are available yet for the selected run/species.");
   }
 
@@ -1883,20 +1877,22 @@ async function computeAndRender(){
   async function loadLayerForTime(timeIso){
     const tid = timeIdFromIso(timeIso);
     let key = null;
-    if(mapKey==="phab"){
+    if(mapKey==="pcatch"){
+      key = `pcatch_${modelKey}`;
+    }else if(mapKey==="phab"){
       key = (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-    }else if(mapKey==="front"){
-      key = "front";
+    }else if(mapKey==="pops"){
+      key = "pops";
+    }else if(mapKey==="agree"){
+      key = "agree";
+    }else if(mapKey==="spread"){
+      key = "spread";
     }else if(mapKey==="conf"){
       key = "conf";
     }else{
-      key = "phab_scoring";
+      key = `pcatch_${modelKey}`;
     }
-    let tpl = state.meta.paths?.per_time?.[key];
-    if((!tpl || typeof tpl !== "string") && key !== "phab_scoring"){
-      key = "phab_scoring";
-      tpl = state.meta.paths?.per_time?.[key];
-    }
+    const tpl = state.meta.paths.per_time[key];
     if(!tpl || typeof tpl !== "string"){
       console.warn("Missing layer template:", key);
       return new Float32Array(W*H).fill(NaN);
@@ -1945,21 +1941,34 @@ async function computeAndRender(){
    Run/variant/species meta wiring
 ------------------------------ */
 async function resolveLatestBase(){
-  const candidates = [
+  const rawCandidates = [
+    "docs/latest",
+    "./docs/latest",
+    "../docs/latest",
     "latest",
     "./latest",
     "../latest",
   ];
+  const candidates = Array.from(new Set(rawCandidates.map(x => x.replace(/\/$/,""))));
   let lastErr = null;
+  let best = null;
   for (const base of candidates) {
-    const url = `${base.replace(/\/$/,"")}/meta_index.json`;
+    const metaIndexUrl = `${base}/meta_index.json`;
     try {
-      const data = await fetchJson(url);
-      state.latestBase = base.replace(/\/$/,"");
-      return data;
+      const data = await fetchJson(metaIndexUrl);
+      const run = data?.runs?.find?.(r => r?.path) || data?.runs?.[data?.runs?.length-1] || null;
+      if(run?.path){
+        state.latestBase = base;
+        return data;
+      }
+      if(!best) best = { base, data };
     } catch (err) {
       lastErr = err;
     }
+  }
+  if(best){
+    state.latestBase = best.base;
+    return best.data;
   }
   throw lastErr || new Error("Could not resolve latest/meta_index.json");
 }
@@ -1969,210 +1978,62 @@ function latestUrl(rel){
   return `${base}/${String(rel).replace(/^\/+/,"")}`;
 }
 
-async function inferIndexFromFallback(){
-  const out = { version: 1, latest_run_id: null, runs: [] };
-  try{
-    const idx = await fetchJson(latestUrl('index.json')).catch(()=>null);
-    const meta = await fetchJson(latestUrl('meta.json')).catch(()=>null);
-    let runPath = idx?.run_path || meta?.run_path || null;
-    if(!runPath){
-      const probe = latestUrl('runs/main/meta.json');
-      if(await exists(probe)) runPath = 'runs/main';
-    }
-    if(!runPath) return out;
-
-    const runMeta = await fetchJson(latestUrl(`${runPath}/meta.json`)).catch(()=>null);
-    const runId = idx?.latest_run_id || meta?.run_id || runPath.split('/').pop() || 'main';
-
-    const preferredSpecies = state?.species || 'skipjack';
-    const speciesCandidates = [
-      preferredSpecies,
-      ...(Array.isArray(runMeta?.species) ? runMeta.species : []),
-      ...(Array.isArray(idx?.species) ? idx.species : []),
-      ...(Array.isArray(meta?.species) ? meta.species : []),
-      'skipjack','yellowfin'
-    ].filter(Boolean);
-    const species = [...new Set(speciesCandidates)];
-
-    const variantCandidates = ['auto','gapfill','base'];
-    const variants = [];
-    for(const v of variantCandidates){
-      let ok = false;
-      for(const sp of species){
-        if(await exists(latestUrl(`${runPath}/variants/${v}/species/${sp}/meta.json`))){ ok = true; break; }
-      }
-      if(ok) variants.push(v);
-    }
-    if(!variants.length) return out;
-    out.latest_run_id = runId;
-    out.runs = [{ run_id: runId, path: runPath, fast: false, variants, species }];
-    return out;
-  }catch(_){
-    return out;
-  }
-}
-
 async function refreshMeta(){
+  // read meta_index to list runs
   state.index = await resolveLatestBase();
-  let runs = Array.isArray(state.index?.runs) ? state.index.runs : [];
-  if(!runs.length){
-    const fb = await inferIndexFromFallback();
-    if(Array.isArray(fb?.runs) && fb.runs.length){
-      state.index = fb;
-      runs = fb.runs;
-    }
-  }
-
   const runSelect = $("runSelect");
   runSelect.innerHTML = "";
-  for(const r of runs){
+  for(const r of state.index.runs){
     const opt = document.createElement("option");
     opt.value = r.run_id;
     opt.textContent = `${r.run_id} (${r.fast ? "fast" : "full"})`;
     runSelect.appendChild(opt);
   }
+  state.runId = state.index.latest_run_id || state.index.runs[state.index.runs.length-1]?.run_id;
+  runSelect.value = state.runId;
 
-  state.runId = state.index?.latest_run_id || runs[runs.length-1]?.run_id || null;
-  runSelect.value = state.runId || "";
-  $("rowRun").style.display = runs.length > 1 ? "" : "none";
-
-  if(!runSelect.dataset.bound){
-    runSelect.dataset.bound = "1";
-    runSelect.addEventListener("change", async ()=>{
-      state.runId = runSelect.value;
-      await refreshVariants();
-    });
-  }
-
-  if(!state.runId){
-    state.runPath = null;
-    state.runMeta = null;
-    state.meta = null;
-    state.grid = null;
-    state.times = [];
-    state.timeIds = [];
-    state.timeIsos = [];
-    updateAnalyzeAvailability();
-    if($("availabilityInfo")){
-      $("availabilityInfo").innerHTML = `<b>${lang==="fa" ? "هنوز ران معتبری پیدا نشد" : "No run found yet"}</b><br><span class="muted">${lang==="fa" ? "latest/ پیدا شد ولی run معتبر register نشده است." : "latest/ was found, but no valid run was registered yet."}</span>`;
-    }
-    return;
-  }
+  runSelect.addEventListener("change", async ()=>{
+    state.runId = runSelect.value;
+    await refreshVariants();
+  });
 
   await refreshVariants();
 }
 
 async function refreshVariants(){
-  const runs = Array.isArray(state.index?.runs) ? state.index.runs : [];
-  const run = runs.find(r=>r.run_id===state.runId) || runs[0] || null;
-  if(!run){
-    state.runPath = null;
-    state.runMeta = null;
-    state.meta = null;
-    state.grid = null;
-    state.times = [];
-    state.timeIds = [];
-    state.timeIsos = [];
-    updateAnalyzeAvailability();
-    return;
-  }
-  state.runId = run.run_id;
-  state.runPath = run.path || `runs/${run.run_id}`;
-
+  const run = state.index.runs.find(r=>r.run_id===state.runId);
+  state.runPath = run.path; // e.g., runs/demo_YYYY-MM-DD
   const variantSelect = $("variantSelect");
   variantSelect.innerHTML = "";
-  const variants = Array.isArray(run.variants) ? run.variants : [];
-  for(const v of variants){
+  for(const v of run.variants){
     const opt = document.createElement("option");
     opt.value = v;
     opt.textContent = v;
     variantSelect.appendChild(opt);
   }
 
-  const preferred = [state.variant, 'auto', ($("gapToggle").checked ? 'gapfill' : 'base'), 'gapfill', 'base']
-    .find(v => variants.includes(v)) || variants[0] || 'auto';
-  state.variant = preferred;
+  // Keep gap toggle in sync with variant
+  const preferred = ($("gapToggle").checked) ? "gapfill" : "base";
+  state.variant = run.variants.includes(preferred) ? preferred : run.variants[0];
   variantSelect.value = state.variant;
-  $("gapToggle").checked = (state.variant === "gapfill");
 
-  if(!variantSelect.dataset.bound){
-    variantSelect.dataset.bound = "1";
-    variantSelect.addEventListener("change", async ()=>{
-      state.variant = variantSelect.value;
-      $("gapToggle").checked = (state.variant === "gapfill");
-      await loadSpeciesMetaAndInit();
-    });
-  }
+  variantSelect.addEventListener("change", async ()=>{
+    state.variant = variantSelect.value;
+    $("gapToggle").checked = (state.variant === "gapfill");
+    await loadSpeciesMetaAndInit();
+  });
 
   await loadSpeciesMetaAndInit();
 }
 
-function sanitizeUiSelections(){
-  const allowedModels = ["scoring", "frontplus"];
-  const allowedMaps = ["phab", "front", "conf"];
-  const allowedAggs = ["p90", "mean"];
-  if(!allowedModels.includes(state.model)) state.model = "scoring";
-  if(!allowedMaps.includes(state.map)) state.map = "phab";
-  if(!allowedAggs.includes(state.agg)) state.agg = "p90";
-  if($("modelSelect")) $("modelSelect").value = state.model;
-  if($("mapSelect")) $("mapSelect").value = state.map;
-  if($("aggSelect")) $("aggSelect").value = state.agg;
-}
-
-function updateAnalyzeAvailability(){
-  const ready = !!state.meta && !!state.grid && Number.isFinite(state.grid?.width) && Number.isFinite(state.grid?.height) && Array.isArray(state.times) && state.times.length > 0;
-  if($("analyzeBtn")) $("analyzeBtn").disabled = !ready;
-  if($("timeSlider")){
-    $("timeSlider").max = String(Math.max(0, (state.times?.length || 1) - 1));
-    $("timeSlider").disabled = !ready;
-  }
-  if(!ready){
-    safeText("dirtyHint", (lang==="fa") ? "هنوز هیچ زمانِ آماده‌ای پیدا نشد" : "No ready forecast times yet");
-    if($("top10Table")){
-      $("top10Table").innerHTML = `<div class="muted small">${(lang==="fa") ? "فعلاً خروجی زمانی آماده نشده است. بعد از اتمام ران دوباره Refresh/Analyze بزن." : "No forecast layers are ready yet. After the backend run finishes, refresh and analyze again."}</div>`;
-    }
-  }
-}
-
 async function loadSpeciesMetaAndInit(){
   state.species = $("speciesSelect").value;
-  sanitizeUiSelections();
-
+  // species meta path:
+  const url = latestUrl(`${state.runPath}/variants/${state.variant}/species/${state.species}/meta.json`);
+  state.meta = await fetchJson(url);
+  // run-level meta for availability reporting + deduped time catalog
   state.runMeta = await fetchJson(latestUrl(`${state.runPath}/meta.json`)).catch(()=>null);
-
-  const runs = Array.isArray(state.index?.runs) ? state.index.runs : [];
-  const run = runs.find(r => r.run_id === state.runId) || {};
-  const speciesCandidates = [
-    state.species,
-    ...(Array.isArray(run.species) ? run.species : []),
-    ...(Array.isArray(state.runMeta?.species) ? state.runMeta.species : []),
-    'skipjack','yellowfin'
-  ].filter(Boolean);
-  const variantCandidates = [state.variant, 'auto', 'gapfill', 'base'].filter(Boolean);
-
-  let chosen = null;
-  for(const v of [...new Set(variantCandidates)]){
-    for(const sp of [...new Set(speciesCandidates)]){
-      const probe = latestUrl(`${state.runPath}/variants/${v}/species/${sp}/meta.json`);
-      if(await exists(probe)){
-        chosen = { v, sp, url: probe };
-        break;
-      }
-    }
-    if(chosen) break;
-  }
-  if(!chosen){
-    throw new Error(`No species meta.json found under ${state.runPath}/variants/*/species/*`);
-  }
-
-  state.variant = chosen.v;
-  state.species = chosen.sp;
-  if($("variantSelect")) $("variantSelect").value = state.variant;
-  if($("speciesSelect")) $("speciesSelect").value = state.species;
-  $("gapToggle").checked = (state.variant === 'gapfill');
-
-  state.meta = await fetchJson(chosen.url);
-  state.grid = state.meta.grid || state.runMeta?.grid || null;
+  state.grid = state.meta.grid;
 
   
   ensureGridBounds();
@@ -2188,7 +2049,6 @@ async function loadSpeciesMetaAndInit(){
   state.timeIds = await filterTimeIdsByExistingLayer(availableTimeIds);
   // keep derived ISO list in sync
   state.times = state.timeIds.map(timeIdToIso);
-  state.timeIsos = state.times.slice();
   state.isoToTimeId = {};
   for(let i=0;i<state.times.length;i++){ state.isoToTimeId[state.times[i]] = state.timeIds[i]; }
 
@@ -2213,18 +2073,15 @@ async function loadSpeciesMetaAndInit(){
     $("t1Select").appendChild(o1);
   }
   // default: latest single time (for planning)
-  if(state.times.length){
-    const last = Math.max(0, state.times.length-1);
-    $("t0Select").selectedIndex = last;
-    $("t1Select").selectedIndex = last;
-  }
+  const last = Math.max(0, state.times.length-1);
+  $("t0Select").selectedIndex = last;
+  $("t1Select").selectedIndex = last;
 
   // defaults persisted
   $("speciesSelect").value = state.species;
   $("modelSelect").value = state.model;
   $("mapSelect").value = state.map;
   $("aggSelect").value = state.agg;
-  updateAnalyzeAvailability();
 
   // Per‑species lookback memory (each species can have its own averaging window)
   try{
