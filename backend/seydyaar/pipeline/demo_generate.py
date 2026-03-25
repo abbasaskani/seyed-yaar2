@@ -6,7 +6,7 @@ Creates fully-offline demo outputs so the PWA works out-of-the-box:
 - PPP (presence-only) is trained using a *presence proxy* (AIS-effort if
   token+network available; otherwise weak-label fallback; optionally CSV)
 
-Output directory layout (default: docs/latest):
+Output directory layout (default: latest):
   latest/meta_index.json
   latest/runs/<run_id>/...
 

@@ -129,7 +129,6 @@ class RuntimeFlags:
     write_diagnostics: bool = False
     copy_verify_nc: bool = False
     prefer_local_wind: bool = True
-    enable_ops: bool = False
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -152,7 +151,6 @@ def _runtime_flags() -> RuntimeFlags:
         write_diagnostics=_env_flag("SEYDYAAR_WRITE_DIAGNOSTICS", False),
         copy_verify_nc=_env_flag("SEYDYAAR_COPY_VERIFY_NC", False),
         prefer_local_wind=_env_flag("SEYDYAAR_PREFER_LOCAL_WIND", True),
-        enable_ops=_env_flag("SEYDYAAR_ENABLE_OPS", False),
     )
 
 
@@ -334,15 +332,14 @@ def _try_copernicus_layers(
         status["errors"].append(f"copernicusmarine import failed: {e}")
         return None, status
 
-    required_keys = ["sst", "chl", "ssh", "currents"] + (["waves"] if flags.enable_ops else [])
-    for k in required_keys:
+    for k in ["sst", "chl", "ssh", "currents", "waves"]:
         if not str(datasets_cfg.get(k, {}).get("dataset_id", "")).strip():
             status["errors"].append(f"datasets.json missing dataset_id for '{k}'")
             return None, status
 
     tmpdir = Path(os.getenv("SEYDYAAR_TMPDIR", ".seydyaar_tmp"))
     tmpdir.mkdir(parents=True, exist_ok=True)
-    log_dir = Path(os.getenv("SEYDYAAR_LOG_DIR", "docs/latest/logs"))
+    log_dir = Path(os.getenv("SEYDYAAR_LOG_DIR", "latest/logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = log_dir / "download_manifest.jsonl"
 
@@ -461,9 +458,8 @@ def _try_copernicus_layers(
         out["v_current_m_s"] = v.astype(np.float32)
         out["current_m_s"] = np.sqrt(u.astype(np.float64) ** 2 + v.astype(np.float64) ** 2).astype(np.float32)
 
-        if flags.enable_ops:
-            p_waves = _subset_one("waves")
-            out["waves_hs_m"] = _to_grid(_read_nc_vars(p_waves, _vnames("waves"))[_vnames("waves")[0]])
+        p_waves = _subset_one("waves")
+        out["waves_hs_m"] = _to_grid(_read_nc_vars(p_waves, _vnames("waves"))[_vnames("waves")[0]])
 
         if flags.enable_vertical:
             for key, out_key in (("sss", "sss_psu"), ("mld", "mld_m"), ("o2", "o2_mmol_m3")):
@@ -737,7 +733,7 @@ def run_daily(
             chl = layers["chl_mg_m3"]
             ssh = layers["ssh_m"]
             cur = layers["current_m_s"]
-            waves = layers.get("waves_hs_m")
+            waves = layers["waves_hs_m"]
             ucur = layers["u_current_m_s"]
             vcur = layers["v_current_m_s"]
 
@@ -784,7 +780,7 @@ def run_daily(
                 sst_c=sst,
                 chl_mg_m3=chl,
                 current_m_s=cur,
-                waves_hs_m=waves if flags.enable_ops else None,
+                waves_hs_m=waves,
                 ssh_m=ssh,
                 front_fused=front_fused,
                 eke=eke,
@@ -800,29 +796,28 @@ def run_daily(
                 thermocline_proxy=thermo,
             )
             phab, _ = habitat_scoring(inputs, priors=priors, weights=weights)
+            pops = ops_feasibility(cur, waves, ops_priors, gear_depth_m=10.0, wind_speed_m_s=ws)
+            pcatch = np.clip(phab * pops, 0.0, 1.0).astype(np.float32)
+            front_mult = np.clip(0.92 + 0.22 * front_fused, 0.90, 1.14).astype(np.float32)
+            frontplus = np.clip(pcatch * front_mult, 0.0, 1.0).astype(np.float32)
+            ens = np.nanmean(np.stack([pcatch, frontplus], axis=0), axis=0).astype(np.float32)
+            agree, spread = ensemble_stats([pcatch, frontplus])
+
             tdir.mkdir(parents=True, exist_ok=True)
+            write_bin_f32(tdir / "pcatch_scoring_f32.bin", pcatch)
+            write_bin_f32(tdir / "pcatch_frontplus_f32.bin", frontplus)
+            write_bin_f32(tdir / "pcatch_ensemble_f32.bin", ens)
             write_bin_f32(tdir / "phab_f32.bin", phab)
+            write_bin_f32(tdir / "pops_f32.bin", pops)
+            write_bin_f32(tdir / "agree_f32.bin", agree)
+            write_bin_f32(tdir / "spread_f32.bin", spread)
             write_bin_f32(tdir / "front_f32.bin", front_fused)
             write_bin_f32(tdir / "sst_f32.bin", sst.astype(np.float32))
             write_bin_f32(tdir / "chl_f32.bin", chl.astype(np.float32))
             write_bin_f32(tdir / "current_f32.bin", cur.astype(np.float32))
+            write_bin_f32(tdir / "waves_f32.bin", waves.astype(np.float32))
             write_bin_u8(tdir / "qc_chl_u8.bin", layers["qc_chl"])
             write_bin_f32(tdir / "conf_f32.bin", layers["conf"])
-
-            if flags.enable_ops and waves is not None:
-                pops = ops_feasibility(cur, waves, ops_priors, gear_depth_m=10.0, wind_speed_m_s=ws)
-                pcatch = np.clip(phab * pops, 0.0, 1.0).astype(np.float32)
-                front_mult = np.clip(0.92 + 0.22 * front_fused, 0.90, 1.14).astype(np.float32)
-                frontplus = np.clip(pcatch * front_mult, 0.0, 1.0).astype(np.float32)
-                ens = np.nanmean(np.stack([pcatch, frontplus], axis=0), axis=0).astype(np.float32)
-                agree, spread = ensemble_stats([pcatch, frontplus])
-                write_bin_f32(tdir / "pcatch_scoring_f32.bin", pcatch)
-                write_bin_f32(tdir / "pcatch_frontplus_f32.bin", frontplus)
-                write_bin_f32(tdir / "pcatch_ensemble_f32.bin", ens)
-                write_bin_f32(tdir / "pops_f32.bin", pops)
-                write_bin_f32(tdir / "agree_f32.bin", agree)
-                write_bin_f32(tdir / "spread_f32.bin", spread)
-                write_bin_f32(tdir / "waves_f32.bin", waves.astype(np.float32))
 
             if flags.write_extended_layers:
                 if eke is not None:
