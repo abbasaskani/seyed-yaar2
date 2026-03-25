@@ -129,6 +129,7 @@ class RuntimeFlags:
     write_diagnostics: bool = False
     copy_verify_nc: bool = False
     prefer_local_wind: bool = True
+    enable_ops: bool = False
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -151,6 +152,7 @@ def _runtime_flags() -> RuntimeFlags:
         write_diagnostics=_env_flag("SEYDYAAR_WRITE_DIAGNOSTICS", False),
         copy_verify_nc=_env_flag("SEYDYAAR_COPY_VERIFY_NC", False),
         prefer_local_wind=_env_flag("SEYDYAAR_PREFER_LOCAL_WIND", True),
+        enable_ops=_env_flag("SEYDYAAR_ENABLE_OPS", False),
     )
 
 
@@ -332,14 +334,15 @@ def _try_copernicus_layers(
         status["errors"].append(f"copernicusmarine import failed: {e}")
         return None, status
 
-    for k in ["sst", "chl", "ssh", "currents", "waves"]:
+    required_keys = ["sst", "chl", "ssh", "currents"] + (["waves"] if flags.enable_ops else [])
+    for k in required_keys:
         if not str(datasets_cfg.get(k, {}).get("dataset_id", "")).strip():
             status["errors"].append(f"datasets.json missing dataset_id for '{k}'")
             return None, status
 
     tmpdir = Path(os.getenv("SEYDYAAR_TMPDIR", ".seydyaar_tmp"))
     tmpdir.mkdir(parents=True, exist_ok=True)
-    log_dir = Path(os.getenv("SEYDYAAR_LOG_DIR", str(Path("docs") / "latest" / "logs")))
+    log_dir = Path(os.getenv("SEYDYAAR_LOG_DIR", "docs/latest/logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = log_dir / "download_manifest.jsonl"
 
@@ -458,8 +461,9 @@ def _try_copernicus_layers(
         out["v_current_m_s"] = v.astype(np.float32)
         out["current_m_s"] = np.sqrt(u.astype(np.float64) ** 2 + v.astype(np.float64) ** 2).astype(np.float32)
 
-        p_waves = _subset_one("waves")
-        out["waves_hs_m"] = _to_grid(_read_nc_vars(p_waves, _vnames("waves"))[_vnames("waves")[0]])
+        if flags.enable_ops:
+            p_waves = _subset_one("waves")
+            out["waves_hs_m"] = _to_grid(_read_nc_vars(p_waves, _vnames("waves"))[_vnames("waves")[0]])
 
         if flags.enable_vertical:
             for key, out_key in (("sss", "sss_psu"), ("mld", "mld_m"), ("o2", "o2_mmol_m3")):
@@ -681,6 +685,26 @@ def run_daily(
         times_root.mkdir(parents=True, exist_ok=True)
         write_bin_u8(sp_root / "mask_u8.bin", mask)
 
+        per_time_paths = {
+            "phab_scoring": f"variants/{variant}/species/{sp}/times/{{time}}/phab_f32.bin",
+            "front": f"variants/{variant}/species/{sp}/times/{{time}}/front_f32.bin",
+            "sst": f"variants/{variant}/species/{sp}/times/{{time}}/sst_f32.bin",
+            "chl": f"variants/{variant}/species/{sp}/times/{{time}}/chl_f32.bin",
+            "current": f"variants/{variant}/species/{sp}/times/{{time}}/current_f32.bin",
+            "conf": f"variants/{variant}/species/{sp}/times/{{time}}/conf_f32.bin",
+            "qc_chl": f"variants/{variant}/species/{sp}/times/{{time}}/qc_chl_u8.bin",
+        }
+        if flags.enable_ops:
+            per_time_paths.update({
+                "pcatch_scoring": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_scoring_f32.bin",
+                "pcatch_frontplus": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_frontplus_f32.bin",
+                "pcatch_ensemble": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_ensemble_f32.bin",
+                "phab_frontplus": f"variants/{variant}/species/{sp}/times/{{time}}/phab_f32.bin",
+                "pops": f"variants/{variant}/species/{sp}/times/{{time}}/pops_f32.bin",
+                "agree": f"variants/{variant}/species/{sp}/times/{{time}}/agree_f32.bin",
+                "spread": f"variants/{variant}/species/{sp}/times/{{time}}/spread_f32.bin",
+                "waves": f"variants/{variant}/species/{sp}/times/{{time}}/waves_f32.bin",
+            })
         sp_meta = {
             "species": sp,
             "label": prof.get("label", {}),
@@ -689,23 +713,7 @@ def run_daily(
             "time_ids": time_ids,
             "paths": {
                 "mask": f"variants/{variant}/species/{sp}/mask_u8.bin",
-                "per_time": {
-                    "pcatch_scoring": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_scoring_f32.bin",
-                    "pcatch_frontplus": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_frontplus_f32.bin",
-                    "pcatch_ensemble": f"variants/{variant}/species/{sp}/times/{{time}}/pcatch_ensemble_f32.bin",
-                    "phab_scoring": f"variants/{variant}/species/{sp}/times/{{time}}/phab_f32.bin",
-                    "phab_frontplus": f"variants/{variant}/species/{sp}/times/{{time}}/phab_f32.bin",
-                    "pops": f"variants/{variant}/species/{sp}/times/{{time}}/pops_f32.bin",
-                    "agree": f"variants/{variant}/species/{sp}/times/{{time}}/agree_f32.bin",
-                    "spread": f"variants/{variant}/species/{sp}/times/{{time}}/spread_f32.bin",
-                    "front": f"variants/{variant}/species/{sp}/times/{{time}}/front_f32.bin",
-                    "sst": f"variants/{variant}/species/{sp}/times/{{time}}/sst_f32.bin",
-                    "chl": f"variants/{variant}/species/{sp}/times/{{time}}/chl_f32.bin",
-                    "current": f"variants/{variant}/species/{sp}/times/{{time}}/current_f32.bin",
-                    "waves": f"variants/{variant}/species/{sp}/times/{{time}}/waves_f32.bin",
-                    "conf": f"variants/{variant}/species/{sp}/times/{{time}}/conf_f32.bin",
-                    "qc_chl": f"variants/{variant}/species/{sp}/times/{{time}}/qc_chl_u8.bin"
-                }
+                "per_time": per_time_paths,
             },
             "model_info": {
                 "habitat": {"priors": priors, "weights": weights},
@@ -722,7 +730,7 @@ def run_daily(
         for ts_iso in ts_list:
             tid = id_by_iso[ts_iso]
             tdir = times_root / tid
-            if (not force) and (tdir / "pcatch_scoring_f32.bin").exists():
+            if (not force) and (tdir / "phab_f32.bin").exists():
                 provider_status.append({"timestamp": ts_iso, "skipped": True, "reason": "already_exists"})
                 continue
             layers = layers_by_tid[tid]
@@ -733,7 +741,7 @@ def run_daily(
             chl = layers["chl_mg_m3"]
             ssh = layers["ssh_m"]
             cur = layers["current_m_s"]
-            waves = layers["waves_hs_m"]
+            waves = layers.get("waves_hs_m")
             ucur = layers["u_current_m_s"]
             vcur = layers["v_current_m_s"]
 
@@ -780,7 +788,7 @@ def run_daily(
                 sst_c=sst,
                 chl_mg_m3=chl,
                 current_m_s=cur,
-                waves_hs_m=waves,
+                waves_hs_m=waves if flags.enable_ops else None,
                 ssh_m=ssh,
                 front_fused=front_fused,
                 eke=eke,
@@ -796,28 +804,29 @@ def run_daily(
                 thermocline_proxy=thermo,
             )
             phab, _ = habitat_scoring(inputs, priors=priors, weights=weights)
-            pops = ops_feasibility(cur, waves, ops_priors, gear_depth_m=10.0, wind_speed_m_s=ws)
-            pcatch = np.clip(phab * pops, 0.0, 1.0).astype(np.float32)
-            front_mult = np.clip(0.92 + 0.22 * front_fused, 0.90, 1.14).astype(np.float32)
-            frontplus = np.clip(pcatch * front_mult, 0.0, 1.0).astype(np.float32)
-            ens = np.nanmean(np.stack([pcatch, frontplus], axis=0), axis=0).astype(np.float32)
-            agree, spread = ensemble_stats([pcatch, frontplus])
-
             tdir.mkdir(parents=True, exist_ok=True)
-            write_bin_f32(tdir / "pcatch_scoring_f32.bin", pcatch)
-            write_bin_f32(tdir / "pcatch_frontplus_f32.bin", frontplus)
-            write_bin_f32(tdir / "pcatch_ensemble_f32.bin", ens)
             write_bin_f32(tdir / "phab_f32.bin", phab)
-            write_bin_f32(tdir / "pops_f32.bin", pops)
-            write_bin_f32(tdir / "agree_f32.bin", agree)
-            write_bin_f32(tdir / "spread_f32.bin", spread)
             write_bin_f32(tdir / "front_f32.bin", front_fused)
             write_bin_f32(tdir / "sst_f32.bin", sst.astype(np.float32))
             write_bin_f32(tdir / "chl_f32.bin", chl.astype(np.float32))
             write_bin_f32(tdir / "current_f32.bin", cur.astype(np.float32))
-            write_bin_f32(tdir / "waves_f32.bin", waves.astype(np.float32))
             write_bin_u8(tdir / "qc_chl_u8.bin", layers["qc_chl"])
             write_bin_f32(tdir / "conf_f32.bin", layers["conf"])
+
+            if flags.enable_ops and waves is not None:
+                pops = ops_feasibility(cur, waves, ops_priors, gear_depth_m=10.0, wind_speed_m_s=ws)
+                pcatch = np.clip(phab * pops, 0.0, 1.0).astype(np.float32)
+                front_mult = np.clip(0.92 + 0.22 * front_fused, 0.90, 1.14).astype(np.float32)
+                frontplus = np.clip(pcatch * front_mult, 0.0, 1.0).astype(np.float32)
+                ens = np.nanmean(np.stack([pcatch, frontplus], axis=0), axis=0).astype(np.float32)
+                agree, spread = ensemble_stats([pcatch, frontplus])
+                write_bin_f32(tdir / "pcatch_scoring_f32.bin", pcatch)
+                write_bin_f32(tdir / "pcatch_frontplus_f32.bin", frontplus)
+                write_bin_f32(tdir / "pcatch_ensemble_f32.bin", ens)
+                write_bin_f32(tdir / "pops_f32.bin", pops)
+                write_bin_f32(tdir / "agree_f32.bin", agree)
+                write_bin_f32(tdir / "spread_f32.bin", spread)
+                write_bin_f32(tdir / "waves_f32.bin", waves.astype(np.float32))
 
             if flags.write_extended_layers:
                 if eke is not None:
@@ -858,6 +867,9 @@ def run_daily(
         write_json(sp_root / "meta.json", sp_meta2)
         minify_json_for_web(sp_root / "meta.json")
 
+    run_models = ["scoring"]
+    if flags.enable_ops:
+        run_models.extend(["frontplus", "ensemble"])
     run_entry = {
         "run_id": run_id,
         "path": f"runs/{run_id}",
@@ -866,7 +878,7 @@ def run_daily(
         "time_count": len(time_ids),
         "variants": [variant],
         "species": list(selected_profiles.keys()),
-        "models": ["scoring", "frontplus", "ensemble"],
+        "models": run_models,
         "generated_at_utc": now_utc.isoformat().replace("+00:00", "Z"),
     }
     # Refresh top-level meta with the final species list/time ids.

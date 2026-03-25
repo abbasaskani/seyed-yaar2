@@ -1,9 +1,9 @@
-name: Run daily + publish docs (rewrite + verify, v4)
+name: Run daily + publish docs (atomic lean)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"  # daily 03:00 UTC
+    - cron: "0 3 * * *"
 
 permissions:
   contents: write
@@ -15,37 +15,30 @@ jobs:
       COPERNICUSMARINE_LOG_LEVEL: INFO
       COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
       COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
-
       COPERNICUS_MARINE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
       COPERNICUS_MARINE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
-
       SEYDYAAR_STRICT_COPERNICUS: "1"
       SEYDYAAR_REWRITE: "1"
-
       SEYDYAAR_TMPDIR: "backend/.seydyaar_tmp"
-      SEYDYAAR_LOG_DIR: "docs/latest/logs"
-      SEYDYAAR_VERIFY_DIR: "docs/latest/verify"
-
+      SEYDYAAR_LOG_DIR: "docs/latest_staging/logs"
+      SEYDYAAR_VERIFY_DIR: "docs/latest_staging/verify"
       SEYDYAAR_PAST_DAYS: "1"
       SEYDYAAR_FUTURE_DAYS: "5"
       SEYDYAAR_STEP_HOURS: "12"
       SEYDYAAR_GRID: "160x160"
-      SEYDYAAR_SPECIES: "skipjack"
-
+      SEYDYAAR_ENABLE_OPS: "0"
+      SEYDYAAR_ENABLE_VERTICAL: "0"
+      SEYDYAAR_ENABLE_CHL_7D: "1"
+      SEYDYAAR_ENABLE_CHL_ANOM: "0"
+      SEYDYAAR_ENABLE_NPP_ANOM: "0"
+      SEYDYAAR_WRITE_EXTENDED_LAYERS: "0"
+      SEYDYAAR_WRITE_DIAGNOSTICS: "0"
+      SEYDYAAR_COPY_VERIFY_NC: "0"
       PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Check Copernicus secrets
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${COPERNICUSMARINE_SERVICE_USERNAME:-}" ] || [ -z "${COPERNICUSMARINE_SERVICE_PASSWORD:-}" ]; then
-            echo "Missing Copernicus secrets: COPERNICUSMARINE_SERVICE_USERNAME / COPERNICUSMARINE_SERVICE_PASSWORD" >&2
-            exit 1
-          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -58,30 +51,38 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -U copernicusmarine
 
-      - name: Clean previous outputs (rewrite)
+      - name: Prepare staging output
         run: |
-          rm -rf docs/latest/runs/main || true
-          rm -rf docs/latest/verify || true
-          rm -rf docs/latest/logs || true
-          mkdir -p docs/latest/logs docs/latest/verify
-          echo "keep" > docs/latest/logs/keep.txt
-          echo "keep" > docs/latest/verify/keep.txt
+          rm -rf docs/latest_staging || true
+          mkdir -p docs/latest_staging/logs docs/latest_staging/verify
+          echo "keep" > docs/latest_staging/logs/keep.txt
+          echo "keep" > docs/latest_staging/verify/keep.txt
 
-      - name: Run pipeline
+      - name: Run pipeline into staging
         shell: bash
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/backend"
-          python -m seydyaar run-daily             --out docs/latest             --past-days "$SEYDYAAR_PAST_DAYS"             --future-days "$SEYDYAAR_FUTURE_DAYS"             --step-hours "$SEYDYAAR_STEP_HOURS"             --grid "$SEYDYAAR_GRID"             --species "$SEYDYAAR_SPECIES"
+          python -m seydyaar run-daily \
+            --out docs/latest_staging \
+            --past-days "$SEYDYAAR_PAST_DAYS" \
+            --future-days "$SEYDYAAR_FUTURE_DAYS" \
+            --step-hours "$SEYDYAAR_STEP_HOURS" \
+            --grid "$SEYDYAAR_GRID" \
+            --species skipjack
 
-      - name: Assert manifest & verify exist
+      - name: Assert manifest + core outputs exist
         if: always()
         run: |
           echo "== logs =="
-          ls -lah docs/latest/logs || true
-          test -f docs/latest/logs/download_manifest.jsonl || test -f docs/latest/logs/keep.txt
+          ls -lah docs/latest_staging/logs || true
+          test -f docs/latest_staging/logs/download_manifest.jsonl
           echo "== verify =="
-          find docs/latest/verify -maxdepth 3 -type f -print || true
+          find docs/latest_staging/verify -maxdepth 3 -type f -print || true
+          test -f docs/latest_staging/meta_index.json
+          test -f docs/latest_staging/runs/main/meta.json
+          test -f docs/latest_staging/runs/main/variants/auto/species/skipjack/meta.json
+          test -f docs/latest_staging/runs/main/variants/auto/species/skipjack/mask_u8.bin
 
       - name: Upload verify + logs as artifact
         if: always()
@@ -89,14 +90,22 @@ jobs:
         with:
           name: seydyaar_verify_and_logs
           path: |
-            docs/latest/logs/**
-            docs/latest/verify/**
-          if-no-files-found: warn
+            docs/latest_staging/logs/**
+            docs/latest_staging/verify/**
+          if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
 
+      - name: Publish staging to docs/latest
+        if: ${{ success() }}
+        run: |
+          rm -rf docs/latest.prev || true
+          if [ -d docs/latest ]; then mv docs/latest docs/latest.prev; fi
+          mv docs/latest_staging docs/latest
+          rm -rf docs/latest.prev || true
+
       - name: Commit & push updated docs
-        if: success()
+        if: ${{ success() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
