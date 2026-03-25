@@ -1243,24 +1243,12 @@ function currentPerTimeKey(){
 }
 
 async function filterTimeIdsByExistingLayer(timeIds){
+  // GitHub Pages/Fastly can return false negatives for HEAD/GET existence probes on .bin files
+  // even when the asset is downloadable. Trust metadata time_ids and only de-dup/sort here.
   try{
-    const key = currentPerTimeKey();
-    const tpl = state?.meta?.paths?.per_time?.[key];
-    if(!tpl || typeof tpl!=="string") return timeIds;
-
-    const good=[];
-    const CONC=6;
-    for(let i=0;i<timeIds.length;i+=CONC){
-      const chunk = timeIds.slice(i,i+CONC);
-      const res = await Promise.all(chunk.map(async tid=>{
-        const url = latestUrl(`${state.runPath}/${tpl.replace("{time}", tid).replace("{time_id}", tid)}`);
-        return (await exists(url)) ? tid : null;
-      }));
-      for(const x of res) if(x) good.push(x);
-    }
-    return good;
+    return Array.from(new Set((timeIds||[]).filter(Boolean))).sort();
   }catch(_){
-    return timeIds;
+    return timeIds || [];
   }
 }
 
@@ -1860,6 +1848,16 @@ async function computeAndRender(){
   localStorage.setItem("map", state.map);
   localStorage.setItem("agg", state.agg);
 
+  if(!state.grid || !Number.isFinite(state.grid.width) || !Number.isFinite(state.grid.height)){
+    throw new Error("Run metadata/grid is not loaded yet. latest/meta_index.json or species meta.json is missing.");
+  }
+  const readyTimeIsos = (Array.isArray(state.timeIsos) && state.timeIsos.length)
+    ? state.timeIsos
+    : (Array.isArray(state.times) ? state.times : []);
+  if(!readyTimeIsos.length){
+    throw new Error("No forecast times are available yet for the selected run/species.");
+  }
+
   const timeIsos = getSelectedTimes();
   const mapKey = $("mapSelect").value;
   const modelKey = $("modelSelect").value;
@@ -1934,21 +1932,34 @@ async function computeAndRender(){
    Run/variant/species meta wiring
 ------------------------------ */
 async function resolveLatestBase(){
-  const candidates = [
+  const rawCandidates = [
+    "docs/latest",
+    "./docs/latest",
+    "../docs/latest",
     "latest",
     "./latest",
     "../latest",
   ];
+  const candidates = Array.from(new Set(rawCandidates.map(x => x.replace(/\/$/,""))));
   let lastErr = null;
+  let best = null;
   for (const base of candidates) {
-    const url = `${base.replace(/\/$/,"")}/meta_index.json`;
+    const metaIndexUrl = `${base}/meta_index.json`;
     try {
-      const data = await fetchJson(url);
-      state.latestBase = base.replace(/\/$/,"");
-      return data;
+      const data = await fetchJson(metaIndexUrl);
+      const run = data?.runs?.find?.(r => r?.path) || data?.runs?.[data?.runs?.length-1] || null;
+      if(run?.path){
+        state.latestBase = base;
+        return data;
+      }
+      if(!best) best = { base, data };
     } catch (err) {
       lastErr = err;
     }
+  }
+  if(best){
+    state.latestBase = best.base;
+    return best.data;
   }
   throw lastErr || new Error("Could not resolve latest/meta_index.json");
 }
@@ -2019,7 +2030,13 @@ async function loadSpeciesMetaAndInit(){
   ensureGridBounds();
 // load server mask
   const maskUrl = latestUrl(`${state.runPath}/${state.meta.paths.mask}`);
-  state.baseMask = await fetchBin(maskUrl, "u8");
+  try{
+    state.baseMask = await fetchBin(maskUrl, "u8");
+  }catch(err){
+    console.warn("Mask fetch failed, falling back to all-valid mask:", err);
+    state.baseMask = new Uint8Array(state.grid.width * state.grid.height);
+    state.baseMask.fill(1);
+  }
 
   // effective analysis mask = server mask × user AOI
   state.analysisMask = combineMask(state.baseMask, state.userMask);
@@ -2029,6 +2046,7 @@ async function loadSpeciesMetaAndInit(){
   state.timeIds = await filterTimeIdsByExistingLayer(availableTimeIds);
   // keep derived ISO list in sync
   state.times = state.timeIds.map(timeIdToIso);
+  state.timeIsos = [...state.times];
   state.isoToTimeId = {};
   for(let i=0;i<state.times.length;i++){ state.isoToTimeId[state.times[i]] = state.timeIds[i]; }
 
@@ -2611,11 +2629,16 @@ $("exportFbBtn").addEventListener("click", async ()=>{
 initMap();
 // Ensure tiles render even if the layout/CSS loads slightly later
 setTimeout(()=>{ try{ map?.invalidateSize(true); }catch(_){} }, 120);
-refreshMeta().catch(err=>{
+const analyzeBtn = $("analyzeBtn");
+if (analyzeBtn) analyzeBtn.disabled = true;
+refreshMeta().then(()=>{
+  if (analyzeBtn) analyzeBtn.disabled = false;
+}).catch(err=>{
   console.error(err);
-  toast(lang==="fa" ? "داده‌ای در مسیر /latest پیدا نشد. اگر هنوز خروجی تولید نکردی، workflow را اجرا کن تا latest/ ساخته شود." : "No data found under /latest. If you haven't generated outputs yet, run the GitHub Action (Run generator) to create latest/.", "err", lang==="fa"?"خطا":"Error");
+  if (analyzeBtn) analyzeBtn.disabled = true;
+  toast(lang==="fa" ? "فایل latest/meta_index.json در ریشهٔ پروژه پیدا نشد. اول باید backend را با --out latest اجرا کنی تا latest/ ساخته شود." : "latest/meta_index.json was not found at the project root. Run the backend first with --out latest so the latest/ folder is generated.", "err", lang==="fa"?"خطا":"Error");
   const hint = $("dirtyHint");
-  if(hint) hint.textContent = (lang==="fa") ? "داده موجود نیست — ابتدا خروجی بساز" : "No data — generate outputs first";
+  if(hint) hint.textContent = (lang==="fa") ? "هنوز خروجی latest ساخته نشده است" : "latest outputs have not been generated yet";
 })
 function getSelectedTimeIndex(){
   return $("t1Select")?.selectedIndex ?? 0;
