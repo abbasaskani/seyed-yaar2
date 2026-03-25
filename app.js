@@ -128,33 +128,15 @@ $("sheetHandle")?.addEventListener("click", ()=>{
 /* ------------------------------
    Data loading (meta + binaries)
 ------------------------------ */
-const _savedSpecies = localStorage.getItem("species") || "skipjack";
-const _savedModelRaw = localStorage.getItem("model") || "scoring";
-const _savedMapRaw = localStorage.getItem("map") || "phab";
-const _savedAggRaw = localStorage.getItem("agg") || "p90";
-const _savedModel = (["scoring","frontplus"].includes(_savedModelRaw) ? _savedModelRaw : "scoring");
-const _savedMap = (["phab","front","conf"].includes(_savedMapRaw) ? _savedMapRaw : "phab");
-const _savedAgg = (["p90","mean"].includes(_savedAggRaw) ? _savedAggRaw : "p90");
-if(_savedModel !== _savedModelRaw) localStorage.setItem("model", _savedModel);
-if(_savedMap !== _savedMapRaw) localStorage.setItem("map", _savedMap);
-if(_savedAgg !== _savedAggRaw) localStorage.setItem("agg", _savedAgg);
-
 const state = {
   index: null,
   runId: null,
   runPath: null,
   variant: "gapfill",
-<<<<<<< HEAD
   species: localStorage.getItem("species") || "skipjack",
   model: (["scoring","frontplus"].includes(localStorage.getItem("model")) ? localStorage.getItem("model") : "scoring"),
   map: (["phab","front","conf"].includes(localStorage.getItem("map")) ? localStorage.getItem("map") : "phab"),
   agg: (["p90","mean"].includes(localStorage.getItem("agg")) ? localStorage.getItem("agg") : "p90"),
-=======
-  species: _savedSpecies,
-  model: _savedModel,
-  map: _savedMap,
-  agg: _savedAgg,
->>>>>>> 24c46bda9eee9df5449a28c2697012bf37bec084
   times: [],
   t0: null,
   t1: null,
@@ -688,7 +670,7 @@ async function showPointPopup(lat, lon, metaInfo){
       state._layerCache = state._layerCache || {};
       state._layerCache[timeId] = state._layerCache[timeId] || {};
 
-      const wantKeys = ["phab_scoring","phab_frontplus","front","conf"];
+      const wantKeys = ["pcatch_ensemble","phab_scoring","pops"];
       const parts = [];
       for(const key of wantKeys){
         const tpl = state.meta.paths.per_time[key];
@@ -1883,14 +1865,20 @@ async function computeAndRender(){
   async function loadLayerForTime(timeIso){
     const tid = timeIdFromIso(timeIso);
     let key = null;
-    if(mapKey==="phab"){
+    if(mapKey==="pcatch"){
+      key = `pcatch_${modelKey}`;
+    }else if(mapKey==="phab"){
       key = (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
-    }else if(mapKey==="front"){
-      key = "front";
+    }else if(mapKey==="pops"){
+      key = "pops";
+    }else if(mapKey==="agree"){
+      key = "agree";
+    }else if(mapKey==="spread"){
+      key = "spread";
     }else if(mapKey==="conf"){
       key = "conf";
     }else{
-      key = (modelKey==="frontplus") ? "phab_frontplus" : "phab_scoring";
+      key = `pcatch_${modelKey}`;
     }
     const tpl = state.meta.paths.per_time[key];
     if(!tpl || typeof tpl !== "string"){
@@ -2689,7 +2677,7 @@ refreshMeta().then(()=>{
 }).catch(err=>{
   console.error(err);
   if (analyzeBtn) analyzeBtn.disabled = true;
-  toast(lang==="fa" ? "فرادادهٔ latest پیدا نشد. اول باید backend را با --out docs/latest اجرا کنی تا docs/latest/ ساخته شود." : "latest metadata was not found. Run the backend with --out docs/latest so docs/latest/ is generated.", "err", lang==="fa"?"خطا":"Error");
+  toast(lang==="fa" ? "فایل latest/meta_index.json در ریشهٔ پروژه پیدا نشد. اول باید backend را با --out latest اجرا کنی تا latest/ ساخته شود." : "latest/meta_index.json was not found at the project root. Run the backend first with --out latest so the latest/ folder is generated.", "err", lang==="fa"?"خطا":"Error");
   const hint = $("dirtyHint");
   if(hint) hint.textContent = (lang==="fa") ? "هنوز خروجی latest ساخته نشده است" : "latest outputs have not been generated yet";
 })
